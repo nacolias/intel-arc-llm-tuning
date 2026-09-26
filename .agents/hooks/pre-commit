@@ -1,0 +1,3 @@
+#!/bin/sh
+# Enable with: git config core.hooksPath .agents/hooks
+exec python3 "$(git rev-parse --show-toplevel)/.agents/scan-private-info.py" --staged
