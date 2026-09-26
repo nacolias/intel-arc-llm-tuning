@@ -6,8 +6,8 @@ Tested on Arc Pro B70 since 2026-09-24, on host [quad-b70-5800x-pex88096](../../
 
 | Item | Value |
 |---|---|
-| Tree | [ggml-org/llama.cpp PR #28243](https://github.com/ggml-org/llama.cpp/pull/28243) (qwen4exp + MTP, open) at `6fcaa16`, plus patches 0001-0017: two upstream cherry-picks, one copied upstream PR (#29245) and fourteen of our diffs ([list and apply order](../../models/qwen3.8-flash-next/configs/patches/README.md)) |
-| Frozen production build | `20260926-2b84213a4` since 2026-09-26. Earlier: `20260925-f47a6a5f3` (patches through 0007, the build behind the fnbench numbers below), `20260925-993baf141` (through 0010), `20260926-2c88bdf19` (through 0011) |
+| Tree | [ggml-org/llama.cpp PR #28243](https://github.com/ggml-org/llama.cpp/pull/28243) (qwen4exp + MTP, open) at `6fcaa16`, plus patches 0001-0023: two upstream cherry-picks, one copied upstream PR (#29245) and twenty of our diffs ([list and apply order](../../models/qwen3.8-flash-next/configs/patches/README.md)) |
+| Frozen production build | `20260926-5c258f538` (through 0023) since 2026-09-26 22:10 UTC. Earlier: `20260926-2b84213a4` (through 0017, earlier on 2026-09-26), `20260925-f47a6a5f3` (patches through 0007, the build behind the fnbench numbers below), `20260925-993baf141` (through 0010), `20260926-2c88bdf19` (through 0011) |
 | Compiler | Intel oneAPI 2026.1 (`icx` / `icpx` 2026.1.1) |
 | Runtime on the host | compute-runtime (NEO) 26.35, Level Zero 1.32.0, kernel 7.0.0-34 with `xe`, GuC 70.58.0 |
 
@@ -84,6 +84,8 @@ Native MTP (multi-token prediction) through PR #28243: `--spec-type draft-mtp --
 | `GGML_SYCL_SPARSE_FA` | 0 | upstream #28796 | enables sparse flash attention |
 | `GGML_SYCL_SPARSE_FA_MARGIN` | 256 | upstream #28796 | extra cells gathered past the hint |
 | `GGML_SYCL_SPARSE_FA_DEBUG` | 0 | upstream #28796; `2` from our patch 0017 | `1`: upstream's debug logging. `2`: also logs selection-union sizes of prompt batches for tiles of 1, 16, 32, 64 and 128 rows, one call in 12 (diagnostic) |
+| `GGML_SYCL_OP_DEVPROF` | 0 | our patches 0020 and 0023 | `<seconds>`: device-side op times from barrier timestamps, printed every `<seconds>` while `/tmp/ggml-sycl-op-devprof` exists. Per-op mode doubles the decode step, so op times turn host-paced; write `coarse` into the file for one span per graph at no measurable cost. Creates the queues with profiling on only when set |
+| `LLAMA_SPEC_OVERRIDE` | unset | our patch 0018 | a file holding `n_max p_min`, re-read by the MTP draft on every draft call (capped at `--spec-draft-n-max`), for A/B tests within one server session |
 | `GGML_SYCL_XMX_GATHER_TYPES` | all bits | upstream #29245 (copied as 0012); bits 9-12 from our patch 0013 | bitmask of expert formats that take the grouped XMX GEMM for `MUL_MAT_ID` batches over 8 tokens: bits 1-256 the IQ formats, 512 Q4_K, 1024 Q5_K, 2048 Q5_1, 4096 Q8_0. `0` restores the per-expert oneDNN loop for A/B tests |
 | `LLAMA_MTP_QSA` | on | our patch 0009 | `0`: dense attention in the MTP draft head; the file `/tmp/llama-mtp-qsa-off` turns draft QSA off at runtime for A/B tests |
 | `LLAMA_MTP_WINDOW` | unset | our patch 0008 | `=<tokens>`: sliding-window mask for the draft; disables draft QSA. 2048 and 8192 saved 4-5 ms per step but cost 4-8 points of acceptance, so leave it unset ([raw](../../models/qwen3.8-flash-next/benchmarks/raw/2026-09-26-lcbench-sessions-summary.csv), `lc-mtpwin-*`) |
@@ -119,3 +121,7 @@ For comparison, the dense Qwen3.8-27B on vLLM at TP4 on the same four cards deco
 - Pinning each card's minimum GPU clock to its maximum while serving speeds up layer-split decode ([finding](../../findings/gpu-clock-floor-speeds-layer-split.md)).
 - Never run a second llama-server next to a loaded one on `xe`: VRAM overcommit spills silently into host RAM that cannot be swapped ([finding](../../findings/xe-vram-overcommit-spills-into-host-ram.md)).
 - Open gaps (upstream status checked 2026-09-26): no async cross-device copies ([#29398](https://github.com/ggml-org/llama.cpp/issues/29398), open feature request); the grouped MoE GEMM for K-quant, Q5_1 and Q8_0 experts exists only locally (patches 0012-0015), while upstream [#29245](https://github.com/ggml-org/llama.cpp/pull/29245) (IQ types) is still open at `950f1c4aa`; Q8_0 kernel PRs [#29186](https://github.com/ggml-org/llama.cpp/pull/29186) and [#29337](https://github.com/ggml-org/llama.cpp/pull/29337) still open; tensor split for qwen4exp [#28569](https://github.com/ggml-org/llama.cpp/pull/28569) still open. A service restart empties the prompt cache; slot save/restore with the draft (0010) and `--cache-ram` cover it ([finding](../../findings/llama-server-restart-drops-prefix-cache.md)).
+
+## Host-to-device copies (2026-09-26)
+
+Upstream's `ggml_backend_sycl_buffer_set_tensor` copies every call through a fresh `malloc` plus `memcpy` (a workaround for mmap'd sources on PVC). For multi-GiB copies the page faults dominate. Loading a 135K-token Flash-Next state back from the host-RAM prompt cache took 2.7 s, and a slot restore from disk 3.2 s. Our patch 0022 stages the copy through two reusable pinned 32 MiB buffers per device. That brought the load to about 0.43 s and the restore to 1.0 s, and cut service start to ready from about 75 s to 33 s, because model weights take the same path ([experiment](../../models/qwen3.8-flash-next/experiments/2026-09-26-prompt-cache-swap-speedup.md)). Device-to-host copies into already-touched memory ran at about 9 GB/s and were not changed.

@@ -13,6 +13,15 @@ Probes and scripts that work across models. Model-specific launch scripts live i
 | [`pairprobe.py`](pairprobe.py) | paired A/B of a runtime flag file on one server: every turn is decoded twice, with the feature off and on, on the same context; resolves acceptance changes of about 2 points that two separate sessions cannot (run-to-run noise is about 3 points on this workload); prints the number of turns with identical greedy outputs |
 | [`lcsum.py`](lcsum.py) | one line per `lcbench.py` or `accprobe.py` JSON: turns, MTP acceptance, milliseconds per MTP step, decode tok/s overall and median prompt latency, the cold read left out |
 | [`gpuprof.py`](gpuprof.py) | while llama-server decodes one request: per-GPU engine busy % from `xe` fdinfo, actual GT clock, llama-server CPU use and busiest threads; shows whether a layer split is host-bound |
+| [`gpupassive.py`](gpupassive.py) | the same per-GPU engine busy % and llama-server CPU as `gpuprof.py`, sampled over fixed windows while something else drives the server; sends no requests |
+| [`turnlog.py`](turnlog.py) | one CSV row per request from a llama-server journal (new prompt tokens, prompt and decode time, draft acceptance, context after, prompt-cache similarity); summary of decode share, reply lengths and acceptance on real traffic; reads timings only, no text |
+| [`switchcost.py`](switchcost.py) | from the same journal: time between llama-server picking the slot and starting the task, split into conversation switches (host-RAM prompt-cache swaps) and same-conversation turns |
+| [`specreplay.py`](specreplay.py) | paired A/B of MTP draft settings (`n_max:p_min`) on a real conversation read from a saved slot file, under the server's own sampler; needs the `LLAMA_SPEC_OVERRIDE` hook (patch 0018) |
+| [`specsum.py`](specsum.py) | per-setting summary of a `specreplay.py` run (JSON or the repository's CSV form): tok/s, acceptance, tokens and ms per verify step, drafted tokens per step, ratio to the baseline with a bootstrap interval over turns |
+| [`switchprobe.py`](switchprobe.py) | cost of swapping a long conversation in and out of llama-server's host-RAM prompt cache (`--cache-ram`), plus a swap-versus-no-swap output check |
+| [`devdrive.py`](devdrive.py) | decode load at long context without a cold read: continues the conversation restored into the slot; for step times and profiles |
+| [`devprofsum.py`](devprofsum.py) | sums the `[SYCL-OP-DEVPROF]` blocks of a server log (patches 0020 and 0023) per op and per op class |
+| [`detcheck.py`](detcheck.py) | whether greedy decoding repeats from an identical restored slot |
 | [`gpu-clock-floor.sh`](gpu-clock-floor.sh) | pins (or restores) the minimum GT0 clock of every Intel GPU to its hardware maximum; for llama.cpp layer split, see [findings/gpu-clock-floor-speeds-layer-split.md](../findings/gpu-clock-floor-speeds-layer-split.md) |
 | [`bmg-aspm-l1.sh`](bmg-aspm-l1.sh) | enables PCIe ASPM L1 on the Arc Pro B70 card links only (switch uplink and other links left off) and checks the result; `status` prints per-card board power; see [findings/bmg-aspm-l1-idle-power.md](../findings/bmg-aspm-l1-idle-power.md) |
 | [`bmg-aspm-l1.service`](bmg-aspm-l1.service) | systemd unit that runs `bmg-aspm-l1.sh apply` at boot and `revert` on stop |
@@ -29,7 +38,7 @@ Both probes are copied verbatim from `steveseguin/b70-optimization-lab`, which i
 
 ## llama-server benchmarks and probes
 
-`fnbench.py`, `lcbench.py`, `klprobe.py`, `accprobe.py`, `pairprobe.py`, `lcsum.py` and `gpuprof.py` are our own (MIT) and need only the Python standard library. They talk to llama-server's native endpoints. Set `BASE` (default `http://127.0.0.1:8080`) and, if the server was started with `--api-key`, `VLLM_API_KEY`. All requests are greedy (temperature 0) with `ignore_eos`.
+`fnbench.py`, `lcbench.py`, `klprobe.py`, `accprobe.py`, `pairprobe.py`, `lcsum.py`, `gpuprof.py` and the tools added on 2026-09-26 (`gpupassive.py` through `detcheck.py` above) are our own (MIT) and need only the Python standard library. The tools that read a saved slot file (`specreplay.py`, `switchprobe.py`, `devdrive.py`, `detcheck.py`) get a real conversation's token IDs from it: keep that file and anything derived from it private. They talk to llama-server's native endpoints. Set `BASE` (default `http://127.0.0.1:8080`) and, if the server was started with `--api-key`, `VLLM_API_KEY`. Requests of the first seven are greedy (temperature 0) with `ignore_eos`; `specreplay.py` and `devdrive.py` use the server's own sampler.
 
 ```bash
 export BASE=http://127.0.0.1:8080

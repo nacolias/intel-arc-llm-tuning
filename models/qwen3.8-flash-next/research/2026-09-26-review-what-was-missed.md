@@ -569,3 +569,25 @@ The day-to-day workload is decode-bound turns at 126-178K on a cached prefix. Th
 - [ ] Periodic idle slot save and a format-version signature, gated by a restored-against-fresh KL probe (`outage-root-causes`, `restore-fidelity-and-ident-fallback`).
 - [ ] Journal parser and image grep (`journal-instrumentation`, `image-path-hazard`).
 - [ ] Add MLC, exllama and Ollama to the engines rule-out table (`other-engines-ruleout-and-bar`).
+
+## Update 2026-09-26 (evening): what was done
+
+- **Journal parser** (`journal-instrumentation`): done, [`tools/turnlog.py`](../../../tools/turnlog.py) and [`tools/switchcost.py`](../../../tools/switchcost.py).
+  - On real traffic decode is 88.5% of the server's busy time.
+  - Acceptance under the production sampler is 59%.
+  - Conversation switches cost 5.7% of busy time, a cost this review did not list ([real agent traffic](../benchmarks/2026-09-26-real-agent-traffic.md)).
+  - The reasoning share of turns is still unmeasured: the journal does not split reasoning from content.
+- **Outage root cause** (`outage-root-causes`): the 2026-09-25 re-read was cancelled by the client after 507 s, not by a proxy ([finding update](../../../findings/llama-server-restart-drops-prefix-cache.md)). Periodic idle saves are done ([idle autosave](../experiments/2026-09-26-slot-autosave.md)).
+  - A format-version signature and a restored-against-fresh KL probe are not done.
+  - A byte-level restore-then-save check passed ([swap speedup](../experiments/2026-09-26-prompt-cache-swap-speedup.md)).
+- **Acceptance methodology and draft re-sweep** (`acceptance-methodology-replay`, `mtp-draft-resweep`): done by replaying the real conversation under the production sampler, with rotated arm order and bootstrap intervals over turns.
+  - `--spec-draft-n-max 4 --spec-draft-p-min 0.5` gained +5.4% and is in production ([experiment](../experiments/2026-09-26-mtp-draft-settings-sampled-replay.md)).
+  - Greedy outputs are not reproducible even from an identical state, which rules out token-match checks ([finding](../../../findings/llama-cpp-sycl-greedy-not-reproducible.md)).
+  - A repetition guard was not added.
+- **Decode step decomposition** (`decode-step-decomposition`): done at 135K with GPU timestamps ([decode device profile](../benchmarks/2026-09-26-decode-device-profile-133k.md)).
+  - The cards are busy 52 of 63 ms per step, one after another.
+  - About 10.6 ms per step is host work outside the GPU graphs.
+  - Target sampling on the GPU did not help.
+  - Not done: the Level Zero knobs, and the 100-112K sweep with per-card monitors.
+- **Platform hygiene** (`platform-hygiene`), part (1) only: the host's launch script logs the uplink's link speed and width at every service start, not at every boot; the public launch script does the same when `UPLINK_BDF` is set. The engine-reset audit and the kernel command-line items are not done.
+- Not started: `image-path-hazard`, `other-engines-ruleout-and-bar`, `reasoning-share-and-budget`.
