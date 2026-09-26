@@ -1,0 +1,16 @@
+diff --git a/ggml/src/ggml-sycl/dpct/helper.hpp b/ggml/src/ggml-sycl/dpct/helper.hpp
+index 85af4cab6..41fc2399a 100644
+--- a/ggml/src/ggml-sycl/dpct/helper.hpp
++++ b/ggml/src/ggml-sycl/dpct/helper.hpp
+@@ -203,7 +203,10 @@ namespace dpct
+     static inline unsigned int get_tid()
+     {
+ #if defined(__linux__)
+-        return syscall(SYS_gettid);
++        // Cached per thread: dev_mgr calls this on every op (set/get current device), and the
++        // raw syscall cost ~6% of the decode main thread on a 4x B70 host (perf, 2026-09-24).
++        static thread_local unsigned int tid = (unsigned int) syscall(SYS_gettid);
++        return tid;
+ #elif defined(_WIN64)
+         return GetCurrentThreadId();
+ #else

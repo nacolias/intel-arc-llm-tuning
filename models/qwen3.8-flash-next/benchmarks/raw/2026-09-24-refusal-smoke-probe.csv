@@ -1,0 +1,3 @@
+checkpoint,prompts,samples_per_prompt,refused,disclaimers,capability_checks_passed,capability_checks,decode_short_tok_s,decode_10k_tok_s,decode_39k_tok_s,note
+unsloth UD-Q4_K_XL (stock),10,1,2,2,5,5,34-37,43,33,mild prompts; smoke test only; decode on the unpatched build
+huihui-ai abliterated UD-Q4_K_XL,10,1,0,0,5,5,38-40,47,38,mild prompts; smoke test only; decode on the unpatched build

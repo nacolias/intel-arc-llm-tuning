@@ -1,0 +1,5 @@
+date,build,config,decode_tok_s,draft_accepted,draft_n,server_main_thread_cpu_pct,gpu,bcs_busy_pct,ccs_busy_pct,act_freq_min_mhz,act_freq_avg_mhz,act_freq_max_mhz
+2026-09-24,PR28243@6fcaa16 unpatched,"262144 ctx, ub 1024, ts 13,13,13,10, MTP n-max 3",37.1,449,750,96,GPU0,16,17,2633,2766,2800
+2026-09-24,PR28243@6fcaa16 unpatched,"262144 ctx, ub 1024, ts 13,13,13,10, MTP n-max 3",37.1,449,750,96,GPU1,16,16,2800,2800,2800
+2026-09-24,PR28243@6fcaa16 unpatched,"262144 ctx, ub 1024, ts 13,13,13,10, MTP n-max 3",37.1,449,750,96,GPU2,15,16,2550,2765,2800
+2026-09-24,PR28243@6fcaa16 unpatched,"262144 ctx, ub 1024, ts 13,13,13,10, MTP n-max 3",37.1,449,750,96,GPU3,18,18,2800,2800,2800

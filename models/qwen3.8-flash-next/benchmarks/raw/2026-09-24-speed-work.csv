@@ -1,0 +1,13 @@
+experiment,arm,date,build,clock_floor,mtp_args,short_decode_tok_s,short_min,short_max,ctx10k_decode_tok_s,ctx10k_draft_accepted,ctx10k_draft_n,ctx39k_decode_tok_s,ctx39k_draft_accepted,ctx39k_draft_n,ctx10k_prompt_tok_s,ctx39k_prompt_tok_s,note
+sycl-graphs,GGML_SYCL_ENABLE_GRAPH unset,2026-09-24,PR28243@6fcaa16 unpatched,no,n-max 3,,,,,,,,,,,,same-day journal runs without the variable were at the same level; exact value not kept
+sycl-graphs,GGML_SYCL_ENABLE_GRAPH=1,2026-09-24,PR28243@6fcaa16 unpatched,no,n-max 3,36.47,,,,,,,,,,,one 512-token run from the service journal
+fused-mmid,before (unpatched),2026-09-24,PR28243@6fcaa16 unpatched,no,n-max 3,37,,,45,,,35,,,,,representative values from the session notes; same-day journal range short 31-38
+fused-mmid,after (0001+0002+0003),2026-09-24,20260924-7e5cb8f13,no,n-max 3,42-44,,,52-54,,,44-45,,,,,range over the session's runs
+draft-sweep,n-max 3 (reference),2026-09-24,20260924-7e5cb8f13,no,--spec-draft-n-max 3,43.6,42.3,45.6,53.6,186,206,44.0,180,223,558.3,554.1,short = median of 5 greedy 512-token runs
+draft-sweep,n-max 4,2026-09-24,20260924-7e5cb8f13,no,--spec-draft-n-max 4,43.6,40.1,45.8,52.7,192,252,45.0,190,259,552.3,553.4,
+draft-sweep,n-max 6 + p-min 0.75,2026-09-24,20260924-7e5cb8f13,no,--spec-draft-n-max 6 --spec-draft-p-min 0.75,46.2,44.9,50.1,57.1,189,229,35.7,187,239,565.4,555.3,
+clock-floor,before (default min_freq 400 MHz),2026-09-24,20260924-7e5cb8f13,no,n-max 3,42-44,,,52-54,,,44-45,,,,,range over the session's runs
+clock-floor,after (min_freq = rp0 2800 MHz),2026-09-24,20260924-7e5cb8f13,yes,n-max 3,50,,,64-66,,,47-49,,,,,range over the session's runs
+draft-sweep-before-fix,n-max 3 (inferred),2026-09-24,PR28243@6fcaa16 unpatched,no,n-max 3 (inferred),,33.5,36.4,44.0,,,29.2,,,,,"service journal before the verify fix; config inferred from mean accepted length; UNVERIFIED"
+draft-sweep-before-fix,n-max 2 (inferred),2026-09-24,PR28243@6fcaa16 unpatched,no,n-max 2 (inferred),,32.5,37.8,42.1,,,34.0,,,,,"service journal before the verify fix; config inferred from mean accepted length; UNVERIFIED"
+draft-sweep-before-fix,n-max 4 or more (inferred),2026-09-24,PR28243@6fcaa16 unpatched,no,n-max >=4 (inferred; mean accepted length 4.3),,31,38,38.0,,,29.5,,,,,"service journal before the verify fix; config inferred from mean accepted length; UNVERIFIED"

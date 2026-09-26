@@ -6,7 +6,7 @@ XPU-specific notes per engine: which images and versions work, which features ar
 |---|---|---|---|
 | vLLM (XPU backend) | [vllm-xpu/](vllm-xpu/) | production serving, tensor parallel, MTP | primary |
 | Intel llm-scaler (vLLM fork) | [llm-scaler/](llm-scaler/) | Intel-patched vLLM builds | reference for patches |
-| llama.cpp (SYCL backend) | [llama-cpp-sycl/](llama-cpp-sycl/) | GGUF models, single-card experiments | not yet tested |
+| llama.cpp (SYCL backend) | [llama-cpp-sycl/](llama-cpp-sycl/) | GGUF models; Qwen3.8-Flash-Next on four cards with layer split and MTP | tested; primary for Qwen3.8-Flash-Next |
 | OpenVINO / OpenVINO Model Server | [openvino/](openvino/) | Intel's own inference stack | not yet tested |
 
 For each engine, record:

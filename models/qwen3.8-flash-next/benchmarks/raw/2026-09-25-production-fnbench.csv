@@ -1,0 +1,7 @@
+run,date,build,ub,ts,sparse_fa,pooled_qsa,aspm_l1,short_decode_median,short_min,short_max,ctx10k_prompt_tok_s,ctx10k_decode_tok_s,ctx10k_draft_accepted,ctx10k_draft_n,ctx39k_prompt_tok_s,ctx39k_decode_tok_s,ctx39k_draft_accepted,ctx39k_draft_n,ctx219k_prompt_tok_s,ctx219k_prompt_s,ctx219k_decode_tok_s,ctx219k_draft_accepted,ctx219k_draft_n,peak_vram_mib_gpu0,peak_vram_mib_gpu1,peak_vram_mib_gpu2,peak_vram_mib_gpu3,note
+ub1536,2026-09-25,20260924-7e5cb8f13,1536,"12,13,13,11",n/a,n/a,no,50.3,,,589.9,63.6,,,582.8,52.6,,,270.0,,18.4,,,,,,,fullest card 28.2 GiB (GPU3); driver-held host RAM 22 GiB
+pp-test,2026-09-25,20260924-7e5cb8f13,1536,"12,13,13,11",n/a,n/a,no,49.9,,,552.3,55.3,177,234,556.2,48.0,,,,,,,,30498,29117,29384,27767,no -ot and -b 4096: pipeline parallelism on; VRAM is resident after load; driver-held host RAM 27 GiB
+sparse,2026-09-25,20260925-60a598ed8,1536,"12,13,13,11",on,n/a,no,49.3,45.7,51.1,590.8,63.1,,,582.4,49.7,,,,,,,,,,,,
+pooled,2026-09-25,20260925-f47a6a5f3,1536,"12,13,13,11",on,on,no,48.6,46.4,49.9,589.8,60.6,182,219,577.2,53.6,,,268.3,816.9,40.6,89,112,28541,28280,28530,28957,sanity answer correct (155); min MemAvailable 91.5 GiB during the 219k run
+aspm-before,2026-09-25,20260925-f47a6a5f3,1536,"12,13,13,11",on,on,no,49.2,46.9,52.0,644.7,67.2,186,206,573.7,55.2,180,225,,,,,,,,,,
+aspm-after,2026-09-25,20260925-f47a6a5f3,1536,"12,13,13,11",on,on,yes,50.5,47.6,51.6,641.2,66.4,186,206,567.6,53.7,178,230,,,,,,,,,,

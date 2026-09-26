@@ -1,0 +1,13 @@
+metric,ub1024_ts_13_13_13_10,ub1536_ts_12_13_13_11,note
+prefill_10k_tok_s,552-630,589.9,ub 1024 range over several noisy runs
+prefill_39k_tok_s,553-560,582.8,ub 1024 range over 7 runs
+prefill_219k_tok_s,254.5,270.0,ub 1024 value from the older unpatched build (2026-09-24)
+decode_short_tok_s,50,50.3,
+decode_10k_tok_s,64,63.6,
+decode_39k_tok_s,49,52.6,
+decode_219k_tok_s,16,18.4,ub 1024 value from the older unpatched build (2026-09-24)
+vram_peak_fullest_card_gib,27.8,28.2,ub 1536 fullest card is GPU3 with about 3.5 GiB free
+driver_held_host_ram_gib,16,22,
+compute_buffer_sycl0_mib,,5289,
+compute_buffer_sycl1_3_mib,,5300,
+compute_buffer_sycl_host_mib,,1200,
