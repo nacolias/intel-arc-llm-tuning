@@ -220,3 +220,60 @@ consecutive query rows how many cells any row keeps (R = 1, 16, 32, 64, 128); on
 call in 12 is logged. At n_kv 34K a 16-row tile keeps ~7.6K cells, a 64-row tile
 ~15.8K, against 2051 per row.
 ```
+
+## 18. `2be97a7d9` (2026-09-26), ours, test hook
+
+```text
+speculative MTP: LLAMA_SPEC_OVERRIDE test hook (n_max / p_min re-read per draft call)
+```
+
+## 19. `55f9b9124` (2026-09-26), ours, diagnostics
+
+```text
+server/llama: log prompt-cache swap timings (host alloc, state walk, device<->host copies) for states of 64 MiB and more
+```
+
+## 20. `556c342cb` (2026-09-26), ours, diagnostics
+
+```text
+sycl: GGML_SYCL_OP_DEVPROF device-side op times from barrier timestamps, read without host waits
+```
+
+## 21. `9105cef9b` and `5c258f538` (2026-09-26), ours, one diff
+
+```text
+server: reuse the host buffers of a loaded prompt-cache state for the next save
+
+A fresh multi-GiB std::vector costs about 0.5 s per GiB in page faults and
+zero-fill: saving a 135K Flash-Next conversation (3.98 GiB) spent 2.1 s
+allocating and 0.45 s copying. Keep the larger buffer of the state just loaded
+back into a slot (one target, one draft) and reuse it when it fits and is at
+most twice the size.
+```
+
+```text
+server: prompt-cache buffer reuse by capacity, with 1/8 slack on fresh buffers
+
+A conversation is a few tokens longer each time it is saved again, so its old
+buffer was always slightly too small and a 135K swap-out still allocated fresh
+(2.5 s). Fresh buffers reserve 1/8 more (untouched, so not resident); spares
+are matched by capacity.
+```
+
+## 22. `015eee507` (2026-09-26), ours
+
+```text
+sycl: stage set_tensor through two reusable pinned buffers per device
+
+The copy went through a fresh malloc per call (a workaround for mmap sources on
+PVC), which page-faulted on every page: loading a 135K Flash-Next state back
+from the host-RAM prompt cache took 2.7 s. Copy in 32 MiB chunks through two
+pinned buffers, overlapping the host memcpy of one chunk with the device copy
+of the other.
+```
+
+## 23. `8f95cb5d2` (2026-09-26), ours, diagnostics
+
+```text
+sycl: GGML_SYCL_OP_DEVPROF coarse mode (one device span per graph)
+```

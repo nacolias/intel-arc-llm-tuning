@@ -1,0 +1,69 @@
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index 5966924eb..f40e2e9af 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -28,6 +28,7 @@
+ #include <unistd.h>
+ #include <map>
+ #include <deque>
++#include <mutex>
+ #include <string>
+ #include <cmath>
+ #include <iostream>
+@@ -718,6 +719,42 @@ catch (sycl::exception const &exc) {
+   std::exit(1);
+ }
+ 
++// Host->device copy staged through two reusable pinned buffers per device: the host memcpy of one
++// chunk overlaps the device copy of the other. Replaces a fresh malloc per call, which page-faulted
++// on every page (about 0.5 s per GiB) before the copy could start.
++static void ggml_sycl_staged_h2d(int device, sycl::queue & q, char * dst, const char * src, size_t size) {
++    static constexpr size_t chunk = 32ull << 20;
++    static std::mutex mtx[GGML_SYCL_MAX_DEVICES];
++    static char * bufs[GGML_SYCL_MAX_DEVICES][2] = {};
++    std::lock_guard<std::mutex> lock(mtx[device]);
++    if (bufs[device][0] == nullptr) {
++        for (auto & b : bufs[device]) {
++            b = (char *) sycl::malloc_host(chunk, q);
++        }
++        if (bufs[device][0] == nullptr || bufs[device][1] == nullptr) {
++            // no pinned memory: copy through one plain buffer, as before
++            char * host_buf = (char *) malloc(size);
++            memcpy(host_buf, src, size);
++            q.memcpy(dst, host_buf, size).wait();
++            free(host_buf);
++            for (auto & b : bufs[device]) {
++                if (b) { sycl::free(b, q); b = nullptr; }
++            }
++            return;
++        }
++    }
++    sycl::event ev[2];
++    int b = 0;
++    for (size_t off = 0; off < size; off += chunk, b ^= 1) {
++        const size_t n = std::min(chunk, size - off);
++        ev[b].wait();   // this buffer's previous chunk has reached the device
++        memcpy(bufs[device][b], src + off, n);
++        ev[b] = q.memcpy(dst + off, bufs[device][b], n);
++    }
++    ev[0].wait();
++    ev[1].wait();
++}
++
+ static void ggml_backend_sycl_buffer_set_tensor(ggml_backend_buffer_t buffer,
+                                                 ggml_tensor *tensor,
+                                                 const void *data, size_t offset,
+@@ -731,11 +768,8 @@ static void ggml_backend_sycl_buffer_set_tensor(ggml_backend_buffer_t buffer,
+     SYCL_CHECK(CHECK_TRY_ERROR(dpct::dev_mgr::instance().get_device(ctx->device).queues_wait_and_throw()));
+ #ifndef _WIN32
+     // Note: Use host buffer to save the data from mmap(), then copy to device. It's workaround for mmap() issue on PVC GPU.
+-    // This function will be called during load model from disk. Use memory buffer replace dynamic won't save more time and brings potential memory leak risk here.
+-    char * host_buf = (char *) malloc(size);
+-    memcpy(host_buf, data, size);
+-    SYCL_CHECK(CHECK_TRY_ERROR((*stream).memcpy((char *) tensor->data + offset, host_buf, size).wait()));
+-    free(host_buf);
++    // The host buffer is a reusable pinned staging pair (see ggml_sycl_staged_h2d).
++    ggml_sycl_staged_h2d(ctx->device, *stream, (char *) tensor->data + offset, (const char *) data, size);
+ #else
+     SYCL_CHECK(CHECK_TRY_ERROR((*stream).memcpy((char *) tensor->data + offset, data, size).wait()));
+ #endif

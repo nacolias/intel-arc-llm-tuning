@@ -16,11 +16,14 @@
 #                 empty keeps llama-server's default                                      [empty]
 #   SIGNATURE     file to write the setup signature to, for llama-server-slot-cache.sh; empty skips it [empty]
 #   ONEAPI_VARS   oneAPI environment script                                              [/opt/intel/oneapi/2026.1/oneapi-vars.sh]
+#   UPLINK_BDF    PCI address of the root port above the PCIe switch, to log its link at start; empty skips [empty]
 #   CTX, UB, BATCH, TS, EXTRA_ARGS: see below.
+# --metrics exposes /metrics (behind the API key), including accepted draft tokens per draft position.
 #
 # Measured with these defaults on build 20260925-f47a6a5f3, GPU clock floor 2800 MHz (tools/gpu-clock-floor.sh),
 # 230 W power cap: decode 48.6 tok/s short, 60.6 at ~10k, 53.6 at ~39k, 40.6 at 219k; prompt ~580 tok/s at
 # 10k-39k and 268 at 219k; busiest card 28,957 MiB peak. See benchmarks/2026-09-25-production-build.md.
+# Those runs used --spec-draft-n-max 3 without a cut; the draft flags below changed on 2026-09-26.
 set -euo pipefail
 
 BIN=${BIN:-/path/to/llama.cpp/build/bin}
@@ -51,7 +54,10 @@ if [ "$MTP" = off ]; then
   SPEC=()
 else
   TS=${TS:-12,13,13,11}
-  SPEC=(-fit off --spec-type draft-mtp --spec-draft-model "$MTP" --spec-draft-n-max 3 -devd SYCL3)
+  # Up to 4 drafted tokens, but stop where the draft head is unsure (p < 0.5): +5.4% decode on replayed real
+  # agent turns at 95-134K under this sampler, against n-max 3 without a cut
+  # (experiments/2026-09-26-mtp-draft-settings-sampled-replay.md). Speed only; the output distribution is unchanged.
+  SPEC=(-fit off --spec-type draft-mtp --spec-draft-model "$MTP" --spec-draft-n-max 4 --spec-draft-p-min 0.5 -devd SYCL3)
 fi
 
 VISION=()
@@ -89,6 +95,13 @@ export GGML_SYCL_SPARSE_FA=${GGML_SYCL_SPARSE_FA:-1}
 export LD_LIBRARY_PATH=$BIN:${LD_LIBRARY_PATH:-}
 unset ZE_AFFINITY_MASK ONEAPI_DEVICE_SELECTOR
 
+# Log the CPU-to-switch uplink next to the server output: it has trained at Gen1 on some boots
+# (findings/pcie-switch-uplink-can-train-at-gen1.md). UPLINK_BDF: the root port above the switch, e.g. 0000:00:03.1.
+if [ -n "${UPLINK_BDF:-}" ]; then
+  UPLINK="$(cat /sys/bus/pci/devices/$UPLINK_BDF/current_link_speed 2>/dev/null) x$(cat /sys/bus/pci/devices/$UPLINK_BDF/current_link_width 2>/dev/null)"
+  echo "PCIe uplink $UPLINK (expected 16.0 GT/s PCIe x16)"
+fi
+
 # -ot per_layer_token_embd=CPU pins the n-gram (PLE) table to CPU memory. llama.cpp already places this lazily read
 # tensor in CPU memory, so the flag is redundant; it also disables multi-GPU pipeline parallelism, which gained
 # nothing here (experiments/2026-09-25-pipeline-parallel-prefill.md). It is kept to match the measured config.
@@ -100,5 +113,5 @@ exec "$BIN/llama-server" \
   -c "$CTX" -np 1 -fa on -ctk f16 -ctv f16 -b "$BATCH" -ub "$UB" -t 8 --jinja \
   --temp 1.0 --top-p 0.95 --top-k 20 \
   --host "$HOST" --port "$PORT" \
-  --api-key-file "$API_KEY_FILE" --no-webui \
+  --api-key-file "$API_KEY_FILE" --no-webui --metrics \
   "${SLOTS[@]}" "${SPEC[@]}" "${VISION[@]}" "${EXTRA[@]}"

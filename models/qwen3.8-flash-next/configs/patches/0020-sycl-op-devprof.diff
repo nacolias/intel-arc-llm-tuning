@@ -1,0 +1,175 @@
+diff --git a/ggml/src/ggml-sycl/dpct/helper.hpp b/ggml/src/ggml-sycl/dpct/helper.hpp
+index 41fc2399a..78876a944 100644
+--- a/ggml/src/ggml-sycl/dpct/helper.hpp
++++ b/ggml/src/ggml-sycl/dpct/helper.hpp
+@@ -811,2 +811,9 @@
+         }
++        // GGML_SYCL_OP_DEVPROF reads GPU timestamps of barrier events: those need profiling queues
++        if (std::getenv("GGML_SYCL_OP_DEVPROF")) {
++          _queues.push_back(sycl::queue(
++              *this, eh,
++              sycl::property_list(sycl::property::queue::enable_profiling(), properties...)));
++          return _queues.back();
++        }
+         _queues.push_back(sycl::queue(
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index b5a032412..5966924eb 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -29,2 +29,3 @@
+ #include <map>
++#include <deque>
+ #include <string>
+@@ -116,2 +117,3 @@
+ int g_ggml_sycl_op_profile = 0;
++int g_ggml_sycl_op_devprof = 0;
+ int g_ggml_sycl_xmx_gather_types = GGML_SYCL_XMX_GATHER_TYPES_DEFAULT;
+@@ -377,2 +379,3 @@
+         g_ggml_sycl_op_profile = ggml_sycl_get_env("GGML_SYCL_OP_PROFILE", 0);
++        g_ggml_sycl_op_devprof = ggml_sycl_get_env("GGML_SYCL_OP_DEVPROF", 0);
+         g_ggml_sycl_xmx_gather_types = ggml_sycl_get_env("GGML_SYCL_XMX_GATHER_TYPES", GGML_SYCL_XMX_GATHER_TYPES_DEFAULT);
+@@ -6233,2 +6236,121 @@
+ 
++// GGML_SYCL_OP_DEVPROF=<seconds>: device-side op times from barrier timestamps; see the op profile
++// above for keys. Runs while /tmp/ggml-sycl-op-devprof exists. Nothing waits for the barriers: a
++// graph's timestamps are read at a later graph compute on the same device, once its last barrier
++// has completed, so the host still runs ahead of the GPUs as it does unprofiled.
++struct ggml_sycl_devprof_mark {
++    sycl::event ev;
++    std::string key;
++};
++struct ggml_sycl_devprof_graph {
++    std::vector<ggml_sycl_devprof_mark> marks;   // a barrier before each op, and one after the last
++    bool   small   = false;                      // under 200 nodes: the MTP draft head's graphs
++    double host_ms = 0.0;                        // host time to submit the graph
++};
++static ggml_sycl_devprof_graph              g_devprof_cur[GGML_SYCL_MAX_DEVICES];
++static std::deque<ggml_sycl_devprof_graph>  g_devprof_done[GGML_SYCL_MAX_DEVICES];
++static std::map<std::string, ggml_sycl_op_prof_entry> g_devprof;
++static double  g_devprof_dev_ms[GGML_SYCL_MAX_DEVICES] = {};
++static double  g_devprof_host_ms[GGML_SYCL_MAX_DEVICES] = {};
++static int64_t g_devprof_graphs[GGML_SYCL_MAX_DEVICES] = {};
++static std::chrono::steady_clock::time_point g_devprof_last = std::chrono::steady_clock::now();
++
++static bool ggml_sycl_devprof_active() {
++    static bool active = false;
++    static auto last = std::chrono::steady_clock::now() - std::chrono::seconds(1);
++    const auto now = std::chrono::steady_clock::now();
++    if (now - last > std::chrono::milliseconds(500)) {
++        last   = now;
++        active = access("/tmp/ggml-sycl-op-devprof", F_OK) == 0;
++    }
++    return active;
++}
++
++struct ggml_sycl_devprof_scope {
++    const ggml_tensor * node;
++    const int &         i;
++    const int           i0;
++    std::vector<ggml_sycl_devprof_mark> & marks;
++    size_t              idx;
++
++    ggml_sycl_devprof_scope(ggml_backend_sycl_context * ctx, const ggml_tensor * node, const int & i) :
++        node(node), i(i), i0(i), marks(g_devprof_cur[ctx->device].marks) {
++        idx = marks.size();
++        marks.push_back({ ctx->stream()->ext_oneapi_submit_barrier(), std::string() });
++    }
++
++    ~ggml_sycl_devprof_scope() { marks[idx].key = ggml_sycl_op_prof_key(node, i != i0); }
++};
++
++// read every finished graph of this device (oldest first, stop at the first unfinished one)
++static void ggml_sycl_devprof_collect(int device) {
++    auto & done = g_devprof_done[device];
++    while (!done.empty()) {
++        auto & g = done.front();
++        try {
++            if (g.marks.back().ev.get_info<sycl::info::event::command_execution_status>() !=
++                sycl::info::event_command_status::complete) {
++                break;
++            }
++            auto t_end = [](const sycl::event & e) {
++                return (double) e.get_profiling_info<sycl::info::event_profiling::command_end>();
++            };
++            for (size_t k = 0; k + 1 < g.marks.size(); ++k) {
++                const double ms = (t_end(g.marks[k + 1].ev) - t_end(g.marks[k].ev)) / 1e6;
++                auto & e = g_devprof[(g.small ? "[small graph] " : "") + g.marks[k].key];
++                e.ms += ms;
++                e.n++;
++                g_devprof_dev_ms[device] += ms;
++            }
++        } catch (sycl::exception const & exc) {
++            GGML_LOG_ERROR("%s: %s\n", __func__, exc.what());
++        }
++        g_devprof_host_ms[device] += g.host_ms;
++        g_devprof_graphs[device]++;
++        done.pop_front();
++    }
++
++    const auto now = std::chrono::steady_clock::now();
++    if (now - g_devprof_last < std::chrono::seconds(g_ggml_sycl_op_devprof) || g_devprof.empty()) {
++        return;
++    }
++    g_devprof_last = now;
++    std::vector<std::pair<double, std::string>> rows;
++    double total = 0.0;
++    for (const auto & kv : g_devprof) {
++        rows.emplace_back(kv.second.ms, kv.first);
++        total += kv.second.ms;
++    }
++    std::sort(rows.begin(), rows.end(), [](const auto & a, const auto & b) { return a.first > b.first; });
++    std::string devs;
++    for (int d = 0; d < ggml_sycl_info().device_count; ++d) {
++        char buf[160];
++        snprintf(buf, sizeof(buf), " d%d: ops %.0f ms, host submit %.0f ms, %lld graphs;", d, g_devprof_dev_ms[d],
++                 g_devprof_host_ms[d], (long long) g_devprof_graphs[d]);
++        devs += buf;
++        g_devprof_dev_ms[d] = g_devprof_host_ms[d] = 0.0;
++        g_devprof_graphs[d] = 0;
++    }
++    GGML_LOG_WARN("[SYCL-OP-DEVPROF] %.0f ms of device op time;%s\n", total, devs.c_str());
++    const size_t n_rows = std::min<size_t>(rows.size(), 60);
++    for (size_t r = 0; r < n_rows; ++r) {
++        const auto & e = g_devprof[rows[r].second];
++        GGML_LOG_WARN("[SYCL-OP-DEVPROF] %9.2f ms %5.1f%% %8lld %8.1f us avg  %s\n", rows[r].first, 100.0 * rows[r].first / total,
++                      (long long) e.n, 1000.0 * rows[r].first / std::max<int64_t>(e.n, 1), rows[r].second.c_str());
++    }
++    g_devprof.clear();
++}
++
++static void ggml_sycl_devprof_end_graph(ggml_backend_sycl_context * sycl_ctx, double host_ms, bool small) {
++    auto & cur = g_devprof_cur[sycl_ctx->device];
++    if (cur.marks.empty()) {
++        return;
++    }
++    cur.marks.push_back({ sycl_ctx->stream()->ext_oneapi_submit_barrier(), std::string() });
++    cur.small   = small;
++    cur.host_ms = host_ms;
++    g_devprof_done[sycl_ctx->device].push_back(std::move(cur));
++    cur = ggml_sycl_devprof_graph();
++}
++
+ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * sycl_ctx, ggml_cgraph * cgraph) {
+@@ -6236,2 +6358,7 @@
+     const bool op_prof_on = g_ggml_sycl_op_profile && ggml_sycl_op_prof_active();
++    const bool devprof_on = g_ggml_sycl_op_devprof && ggml_sycl_devprof_active();
++    const auto devprof_t0 = std::chrono::steady_clock::now();
++    if (g_ggml_sycl_op_devprof) {
++        ggml_sycl_devprof_collect(sycl_ctx->device);
++    }
+ 
+@@ -6250,2 +6377,6 @@
+         }
++        std::optional<ggml_sycl_devprof_scope> devprof;
++        if (devprof_on) {
++            devprof.emplace(sycl_ctx, node, i);
++        }
+ 
+@@ -6346,2 +6477,7 @@
+     }
++    if (devprof_on) {
++        ggml_sycl_devprof_end_graph(sycl_ctx, std::chrono::duration<double, std::milli>(
++                                                  std::chrono::steady_clock::now() - devprof_t0).count(),
++                                    cgraph->n_nodes < 200);
++    }
+ }

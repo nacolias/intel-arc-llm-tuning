@@ -1,0 +1,7 @@
+# GGML_SYCL_OP_DEVPROF coarse mode (patch 0023): one barrier before a graph's first op and one after its last, over 3 devdrive requests at 135.2K-136.8K (1,536 tokens, 1,076 accepted, 460 verify steps; the block below covers 311 of them), build 8f95cb5d2 with profiling queues, production draft flags (3 drafted tokens per step). Step time 62.7 ms on these requests. "[small graph]" = graphs under 200 nodes. quad-b70-5800x-pex88096, 2026-09-26.
+device,graph_span_ms_total,host_submit_ms_total,graphs,span_ms_per_verify_step,host_ms_per_verify_step
+0,3541,2154,311,11.39,6.93
+1,3431,2164,311,11.03,6.96
+2,3570,2157,310,11.48,6.94
+3,5656,2446,1541,18.19,7.86
+all,16198,8921,,52.08,

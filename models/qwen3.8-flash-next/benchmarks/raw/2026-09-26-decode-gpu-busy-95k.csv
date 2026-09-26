@@ -1,0 +1,5 @@
+# tools/gpupassive.py, three 10 s windows during the 768-token draft-settings replay at 94.8K-97.4K context (arms rotating), production-equivalent build 2be97a7d9. xe fdinfo ccs busy per card; GPU indices in PCI order. quad-b70-5800x-pex88096, 2026-09-26.
+window,gpu0_ccs_pct,gpu1_ccs_pct,gpu2_ccs_pct,gpu3_ccs_pct,summed_pct,llama_server_cpu_pct_of_one_core,busiest_thread_pct
+0,22,22,22,43,110,94,93
+1,23,22,22,45,112,97,97
+2,22,22,22,35,100,95,95

@@ -1,0 +1,67 @@
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index cabc9a593..4e43bd96b 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -15,6 +15,8 @@
+ #include <algorithm>
+ #include <cassert>
+ #include <cmath>
++#include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ #include <iomanip>
+ #include <map>
+@@ -1363,6 +1365,30 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+     std::vector<int>                i_last;
+     std::vector<std::vector<float>> chain_h;
+ 
++    // test hook (LLAMA_SPEC_OVERRIDE=<file> holding "n_max p_min"): lets a paired A/B change the draft
++    // length and confidence cut between requests without a restart; n_max is capped at the start value
++    const char * ovr_path  = nullptr;
++    int32_t      n_max_cfg = 0;
++    float        p_min_cfg = 0.0f;
++
++    void apply_override() {
++        if (ovr_path == nullptr) {
++            return;
++        }
++        int32_t n = n_max_cfg;
++        float   pm = p_min_cfg;
++        if (FILE * f = std::fopen(ovr_path, "r")) {
++            int a = 0; float b = 0.0f;
++            if (std::fscanf(f, "%d %f", &a, &b) == 2) {
++                n  = std::max(1, std::min(a, n_max_cfg));
++                pm = b;
++            }
++            std::fclose(f);
++        }
++        params.n_max = n;
++        params.p_min = pm;
++    }
++
+     common_speculative_impl_draft_mtp(const common_params_speculative & params, uint32_t n_seq)
+         : common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_MTP, n_seq, params.draft.n_max)
+         , params(params.draft)
+@@ -1435,6 +1461,13 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+         }
+         this->n_max = this->params.n_max;
+ 
++        ovr_path  = std::getenv("LLAMA_SPEC_OVERRIDE");
++        n_max_cfg = this->params.n_max;
++        p_min_cfg = this->params.p_min;
++        if (ovr_path) {
++            LOG_INF("%s: draft n_max/p_min follow %s (test hook)\n", __func__, ovr_path);
++        }
++
+         pending_h.assign(n_seq, std::vector<float>(n_embd, 0.0f));
+ 
+         i_last.assign(n_seq, -1);
+@@ -1604,6 +1637,8 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+     void draft(common_speculative_draft_params_vec & dparams) override {
+         auto & ctx_dft = params.ctx_dft;
+ 
++        apply_override();
++
+         common_batch_clear(batch);
+ 
+         // keep track of which sequences are still drafting
