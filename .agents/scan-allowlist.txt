@@ -34,6 +34,10 @@ archive.org
 asrock.com  # motherboard vendor; public board manual cited in findings/bmg-aspm-l1-idle-power.md
 broadcom.com  # PCIe switch vendor; public PEX88000 product brief cited in the quad-b70 host file
 pcgameshardware.de  # public press review of the Arc Pro B70, cited for idle power
+github.khronos.org  # public Khronos SYCL reference, linked from upstream llama.cpp PR #29245's documentation (configs/patches/0012)
+youtube.com  # public video host; two videos cited as sources in the Flash-Next vLLM community survey (research/2026-09-26)
+localmaxxing.com  # public benchmark leaderboard cited in the Flash-Next vLLM community survey (research/2026-09-26)
+level1techs.com  # public Level1Techs forum, topic 256645 cited in the Flash-Next vLLM community survey (research/2026-09-26)
 
 # Version numbers that look like IPv4 addresses
 26.18.8.2  # Intel multi-arc-bmg-offline-installer release

@@ -100,6 +100,10 @@ def scan_line(line, allowlist):
             val = m.group(1)
             if placeholder(val) or val.isdigit() or len(val) < 8:
                 continue
+            # a call, member access or scope operator is source code, not a pasted secret
+            # (for example `n_tokens = slot->prompt.tokens.size()` in a C++ diff)
+            if re.search(r"[(\[]|->|::", val):
+                continue
             hits.append(("literal secret value", m.group(0)))
     return hits
 
