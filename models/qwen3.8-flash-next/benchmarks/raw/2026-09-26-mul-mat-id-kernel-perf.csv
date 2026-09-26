@@ -1,0 +1,17 @@
+variant,type_a,experts,used,m,n,k,us_per_run,tflops,source_task_output
+"per-expert loop (GGML_SYCL_XMX_GATHER_TYPES=0)",q4_K,512,10,640,1536,2560,11314.47,4.45,by7khhn9g
+"per-expert loop (GGML_SYCL_XMX_GATHER_TYPES=0)",q5_K,512,10,640,1536,2560,11943.55,4.21,by7khhn9g
+"per-expert loop (GGML_SYCL_XMX_GATHER_TYPES=0)",q5_1,512,10,2560,1536,640,11017.13,4.57,by7khhn9g
+"per-expert loop (GGML_SYCL_XMX_GATHER_TYPES=0)",q8_0,512,10,2560,1536,640,10935.39,4.60,by7khhn9g
+"grouped v1 (8793154f8)",q4_K,512,10,640,1536,2560,5561.61,9.05,by7khhn9g
+"grouped v1 (8793154f8)",q5_K,512,10,640,1536,2560,7807.55,6.45,by7khhn9g
+"grouped v1 (8793154f8)",q5_1,512,10,2560,1536,640,4673.80,10.77,by7khhn9g
+"grouped v1 (8793154f8)",q8_0,512,10,2560,1536,640,7970.92,6.31,by7khhn9g
+"grouped + vector loads (517eb833d)",q4_K,512,10,640,1536,2560,4858.96,10.36,bi827tk1i
+"grouped + vector loads (517eb833d)",q5_K,512,10,640,1536,2560,5305.17,9.49,bi827tk1i
+"grouped + vector loads (517eb833d)",q5_1,512,10,2560,1536,640,4442.04,11.33,bi827tk1i
+"grouped + vector loads (517eb833d)",q8_0,512,10,2560,1536,640,7981.60,6.31,bi827tk1i
+"grouped + in-place I/O (85b26781b)",q4_K,512,10,640,1536,2560,3927.61,12.81,foreground QUICK window 2026-09-26 ~00:5x UTC
+"grouped + in-place I/O (85b26781b)",q5_K,512,10,640,1536,2560,4436.68,11.34,foreground QUICK window 2026-09-26 ~00:5x UTC
+"grouped + in-place I/O (85b26781b)",q5_1,512,10,2560,1536,640,3775.97,13.33,foreground QUICK window 2026-09-26 ~00:5x UTC
+"grouped + in-place I/O (85b26781b)",q8_0,512,10,2560,1536,640,7395.54,6.81,foreground QUICK window 2026-09-26 ~00:5x UTC

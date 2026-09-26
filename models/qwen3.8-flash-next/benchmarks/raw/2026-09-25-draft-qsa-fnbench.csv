@@ -1,0 +1,5 @@
+# tools/fnbench.py with SHORT_REPS=3 on the sandbox build through patch 0009 (commit 0f23f62c8), quad-b70-5800x-pex88096, 2026-09-25, run before the lc-draftqsa lcbench session. Sanity answer correct. GPU memory after load 28360/28346/28612/29050 MiB against 28360/28346/28612/28954 MiB for the production build 20260925-f47a6a5f3 the same day: +96 MiB on SYCL3 (the draft's 64 MiB indexer cache plus its 32 MiB pooled-key buffer, both logged at start-up). Transcribed from the test-window stdout.
+point,prompt_tokens,prompt_tok_s,prompt_s,decode_tok_s,decode_min,decode_max,draft_accepted,draft_n
+short,19,,,46.3,45.9,47.2,,
+ctx10k,9749,589.6,16.5,59.4,,,182,219
+ctx39k,39119,579.8,67.5,54.9,,,180,222

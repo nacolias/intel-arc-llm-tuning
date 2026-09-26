@@ -1,0 +1,68 @@
+diff --git a/ggml/src/ggml-sycl/fattn-sparse.cpp b/ggml/src/ggml-sycl/fattn-sparse.cpp
+index 93c1a2a64..7d3f17dde 100644
+--- a/ggml/src/ggml-sycl/fattn-sparse.cpp
++++ b/ggml/src/ggml-sycl/fattn-sparse.cpp
+@@ -396,7 +396,63 @@ static void ggml_sycl_flash_attn_ext_sparse_multi(ggml_backend_sycl_context & ct
+     ggml_sycl_flash_attn_ext(ctx, &dst_g);
+ }
+ 
++// GGML_SYCL_SPARSE_FA_DEBUG=2: for a masked prompt batch, the number of cells any row of an R-row
++// tile keeps, for several R (what a tile-union gather would move and attend)
++static void sparse_fa_union_stats(ggml_backend_sycl_context & ctx, const ggml_tensor * dst) {
++    const ggml_tensor * Q    = dst->src[0];
++    const ggml_tensor * K    = dst->src[1];
++    const ggml_tensor * mask = dst->src[3];
++    if (!Q || !K || !mask || mask->type != GGML_TYPE_F16 || ggml_get_op_params_i32(dst, 4) <= 0 ||
++        Q->ne[1] <= sparse_fa_max_q() || mask->ne[2] != 1 || mask->ne[3] != 1) {
++        return;
++    }
++    static int calls = 0;
++    if (calls++ % 12 != 0) {
++        return;
++    }
++    const int64_t      n_q   = Q->ne[1];
++    const int64_t      n_kv  = K->ne[1];
++    const size_t       s1    = mask->nb[1] / sizeof(sycl::half);
++    const sycl::half * m     = (const sycl::half *) mask->data;
++    dpct::queue_ptr    stream = ctx.stream();
++
++    char line[512];
++    int  len = snprintf(line, sizeof(line), "[FA-UNION] n_q=%lld n_kv=%lld n_kv_max=%d:", (long long) n_q,
++                        (long long) n_kv, ggml_get_op_params_i32(dst, 4));
++    for (const int64_t R : { 1, 16, 32, 64, 128 }) {
++        const int64_t n_t = (n_q + R - 1) / R;
++        ggml_sycl_pool_alloc<int32_t> cnt(ctx.pool(), (size_t) n_t);
++        int32_t * c = cnt.get();
++        SYCL_CHECK(CHECK_TRY_ERROR(stream->memset(c, 0, (size_t) n_t * sizeof(int32_t))));
++        stream->parallel_for(sycl::range<2>((size_t) n_t, (size_t) n_kv), [=](sycl::id<2> id) {
++            const int64_t t  = (int64_t) id[0];
++            const int64_t j  = (int64_t) id[1];
++            const int64_t r1 = std::min<int64_t>(n_q, (t + 1) * R);
++            for (int64_t r = t * R; r < r1; ++r) {
++                if (sycl::isfinite((float) m[(size_t) r * s1 + j])) {
++                    sycl::atomic_ref<int32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
++                                     sycl::access::address_space::global_space>(c[t]).fetch_add(1);
++                    return;
++                }
++            }
++        });
++        std::vector<int32_t> h((size_t) n_t);
++        SYCL_CHECK(CHECK_TRY_ERROR(stream->memcpy(h.data(), c, (size_t) n_t * sizeof(int32_t)).wait()));
++        double  sum = 0;
++        int32_t mx  = 0;
++        for (const int32_t v : h) {
++            sum += v;
++            mx = std::max(mx, v);
++        }
++        len += snprintf(line + len, sizeof(line) - len, " R=%lld mean %.0f max %d;", (long long) R, sum / n_t, (int) mx);
++    }
++    fprintf(stderr, "%s\n", line);
++}
++
+ bool ggml_sycl_flash_attn_ext_sparse(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
++    if (sparse_fa_debug() >= 2) {
++        sparse_fa_union_stats(ctx, dst);
++    }
+     int64_t n_kv_g = 0;
+     if (!sparse_fa_enabled() || !sparse_fa_applicable(dst, n_kv_g)) {
+         return false;

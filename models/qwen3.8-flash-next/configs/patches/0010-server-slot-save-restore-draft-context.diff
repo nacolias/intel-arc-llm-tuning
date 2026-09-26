@@ -1,0 +1,55 @@
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index b6835e434..3ff7e5b48 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -2579,6 +2579,16 @@ private:
+                         break;
+                     }
+ 
++                    // the speculative draft keeps its own cache of the same sequence: save it too,
++                    // or a restored slot would draft without the prefix
++                    size_t nwrite_dft = 0;
++                    if (ctx_dft) {
++                        nwrite_dft = llama_state_seq_save_file(ctx_dft, (filepath + ".dft").c_str(), slot->id, nullptr, 0);
++                        if (nwrite_dft == 0) {
++                            SRV_WRN("could not save the draft state of slot %d\n", id_slot);
++                        }
++                    }
++
+                     const int64_t t_end = ggml_time_us();
+                     const double t_save_ms = (t_end - t_start) / 1000.0;
+ 
+@@ -2588,7 +2598,7 @@ private:
+                     res->filename = filename;
+                     res->is_save  = true;
+                     res->n_tokens = slot->prompt.tokens.size();
+-                    res->n_bytes  = nwrite;
++                    res->n_bytes  = nwrite + nwrite_dft;
+                     res->t_ms     = t_save_ms;
+                     queue_results.send(std::move(res));
+                 } break;
+@@ -2638,6 +2648,24 @@ private:
+ 
+                         slot->prompt.clear();
+                         slot->prompt.tokens = std::move(restored);
++
++                        // restore the draft's copy of the sequence; without one, start the draft empty
++                        // rather than on whatever prompt it held before
++                        if (ctx_dft) {
++                            const std::string path_dft = filepath + ".dft";
++                            size_t nread_dft = 0;
++                            if (FILE * f = fopen(path_dft.c_str(), "rb")) {
++                                fclose(f);
++                                // a null token buffer only queries the count; the draft file holds no tokens
++                                llama_token tok_dft = 0;
++                                size_t n_tok_dft = 0;
++                                nread_dft = llama_state_seq_load_file(ctx_dft, path_dft.c_str(), slot->id, &tok_dft, 1, &n_tok_dft);
++                            }
++                            if (nread_dft == 0) {
++                                llama_memory_seq_rm(llama_get_memory(ctx_dft), slot->id, -1, -1);
++                                SRV_WRN("no usable draft state for slot %d; the draft starts empty\n", id_slot);
++                            }
++                        }
+                     } catch (const std::exception & err) {
+                         slot->prompt_clear();
+                         send_error(task, std::string("Unable to restore slot: ") + err.what(), ERROR_TYPE_INVALID_REQUEST);

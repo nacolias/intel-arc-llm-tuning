@@ -1,0 +1,11 @@
+# llama-server slot save/restore with the MTP draft context (patch 0010), quad-b70-5800x-pex88096, 2026-09-25/26. From the service journal and test outputs.
+date_utc,event,tokens,size,draft_size,seconds,note
+2026-09-25,save,135760,3.7G,303M,1.5,before a planned restart (test window)
+2026-09-25,restart,135760,,,88,service restart wall time including model load; restore ran in ExecStartPost
+2026-09-25,restore,135760,,,,first follow-up turn 3.92 s then 0.78-0.80 s; acceptance normal
+2026-09-25,save,41364,1.2G,93M,0.4,repeated 14 times across test windows
+2026-09-26,restore,41364,,,0.89,after re-signing the saved slot for a new build with the same KV layout
+2026-09-25,cold_read,134862,,,455.35,the cold read this test window replaced (build 20260925-993baf141; same lcbench context; from the test output)
+2026-09-25,save,136528,3.7G,305M,1.5,second 135K-class cycle in the same window (service journal)
+2026-09-25,restore,136528,,,,all 136528 tokens restored; time not logged (service journal)
+2026-09-26,restore-refused,41364,,,,11 starts of a build with a different signature between 2026-09-25T23:49 and 2026-09-26T02:10 each logged: saved slot is from a different setup; not restoring (service journal)

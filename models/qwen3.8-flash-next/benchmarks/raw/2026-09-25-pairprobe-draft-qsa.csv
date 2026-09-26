@@ -1,0 +1,28 @@
+# tools/pairprobe.py: paired A/B of QSA in the MTP draft head (patch 0009) at ~135K on quad-b70-5800x-pex88096, 2026-09-25. One server session on the sandbox build through 0009 (commit 0f23f62c8); context of 134,822 tokens read cold in 438.65 s first. Each turn decodes 192 tokens greedily with draft QSA on ("qsa"), then again with /tmp/llama-mtp-qsa-off present ("dense"); the conversation continues with the qsa answer. The dense arm's prompt_s is a re-decode on the cached prefix, not a prompt turn. Transcribed from the test-window stdout; generated text not kept.
+turn,arm,draft_accepted,draft_n,decode_tok_s,prompt_s,ms_per_step,note
+0,qsa,125,196,41.6,0.80,,
+0,dense,123,203,40.2,0.18,,
+1,qsa,131,178,45.8,1.93,,
+1,dense,123,202,39.4,0.17,,
+2,qsa,131,179,45.8,3.69,,
+2,dense,130,182,45.0,0.17,,
+3,qsa,128,188,42.9,0.90,,
+3,dense,126,194,40.4,0.17,,
+4,qsa,128,186,43.5,1.71,,
+4,dense,126,193,41.1,0.17,,
+5,qsa,127,191,42.4,3.62,,
+5,dense,126,191,41.8,0.16,,
+6,qsa,123,202,40.5,1.71,,
+6,dense,127,190,41.7,0.17,,
+7,qsa,129,184,44.4,1.95,,
+7,dense,124,198,39.9,0.16,,
+8,qsa,123,203,39.9,3.48,,
+8,dense,125,196,41.4,0.17,,
+9,qsa,133,171,48.1,1.73,,
+9,dense,131,178,44.7,0.17,,
+10,qsa,125,198,41.7,1.81,,
+10,dense,127,192,42.8,0.17,,
+11,qsa,128,188,43.0,2.64,,
+11,dense,127,188,42.5,0.17,,
+total,qsa,1531,2264,43.4,,70.3,acceptance 67.6%; identical greedy outputs in 2 of 12 turns
+total,dense,1515,2307,41.9,,71.5,acceptance 65.7%

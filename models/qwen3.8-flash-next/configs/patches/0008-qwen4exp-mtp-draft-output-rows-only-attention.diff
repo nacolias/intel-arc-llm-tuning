@@ -1,0 +1,232 @@
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index f28ae94a4..33dcf5a77 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -1340,13 +1340,48 @@ bool llama_context::set_adapter_cvec(
+     return res;
+ }
+ 
++// LLAMA_HOST_PROF (see llama-graph.cpp): phase times of process_ubatch per context type and size
++extern std::map<std::string, std::pair<double, int64_t>> g_llama_host_prof_inputs;
++int llama_host_prof_interval();
++
++static std::map<std::string, std::pair<double, int64_t>> g_llama_host_prof_phases;
++
++static void llama_host_prof_add(const std::string & key, int64_t t0_us) {
++    auto & e = g_llama_host_prof_phases[key];
++    e.first  += (ggml_time_us() - t0_us)/1000.0;
++    e.second += 1;
++}
++
++static void llama_host_prof_tick() {
++    static int64_t last = ggml_time_us();
++    const int64_t now = ggml_time_us();
++    if (now - last < (int64_t) llama_host_prof_interval()*1000000) {
++        return;
++    }
++    last = now;
++    for (auto * m : { &g_llama_host_prof_phases, &g_llama_host_prof_inputs }) {
++        for (const auto & kv : *m) {
++            LLAMA_LOG_WARN("[HOST-PROF] %9.1f ms %8lld  %.3f ms avg  %s\n", kv.second.first, (long long) kv.second.second,
++                           kv.second.first/std::max<int64_t>(kv.second.second, 1), kv.first.c_str());
++        }
++        m->clear();
++    }
++}
++
+ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
++    const bool hprof = llama_host_prof_interval() > 0;
++    const std::string hkey = std::string(cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? "draft" : "target") +
++        (ubatch.n_tokens == 1 ? " t=1" : ubatch.n_tokens <= 8 ? " t<=8" : " t>8");
++    int64_t ht = hprof ? ggml_time_us() : 0;
++
+     if (mctx && !mctx->apply()) {
+         LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
+         ret = GGML_STATUS_FAILED;
+         return nullptr;
+     }
+ 
++    if (hprof) { llama_host_prof_add(hkey + " apply", ht); ht = ggml_time_us(); }
++
+     auto * res = get_gf_res_prev();
+     auto * gf  = res->get_gf();
+ 
+@@ -1398,12 +1433,18 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+         //const auto t_start_us = ggml_time_us();
+ 
+         // FIXME this call causes a crash if any model inputs were not used in the graph and were therefore not allocated
++        if (hprof) { llama_host_prof_add(hkey + " build/reuse", ht); ht = ggml_time_us(); }
++
+         res->set_inputs(&ubatch);
+ 
++        if (hprof) { llama_host_prof_add(hkey + " set_inputs", ht); ht = ggml_time_us(); }
++
+         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
+     }
+ 
+     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
++
++    if (hprof) { llama_host_prof_add(hkey + " compute", ht); llama_host_prof_tick(); }
+     if (status != GGML_STATUS_SUCCESS) {
+         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
+         ret = status;
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index fd4290cf0..9c5ef5658 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -18,6 +18,10 @@
+ 
+ #include <cassert>
+ #include <cmath>
++#include <cstdlib>
++#include <map>
++#include <string>
++#include <typeinfo>
+ #include <cstring>
+ #include <numeric>
+ #include <sstream>
+@@ -1353,9 +1357,28 @@ void llm_graph_result::reset() {
+     gf = ggml_new_graph_custom(ctx_compute.get(), max_nodes, false);
+ }
+ 
++// LLAMA_HOST_PROF=<seconds>: host time per graph input type, accumulated here and printed by
++// llama_host_prof_tick() (llama-context.cpp) together with the process_ubatch phase times
++std::map<std::string, std::pair<double, int64_t>> g_llama_host_prof_inputs;
++
++int llama_host_prof_interval() {
++    static const int s = [] {
++        const char * e = getenv("LLAMA_HOST_PROF");
++        return e != nullptr ? std::max(0, atoi(e)) : 0;
++    }();
++    return s;
++}
++
+ void llm_graph_result::set_inputs(const llama_ubatch * ubatch) {
++    const bool prof = llama_host_prof_interval() > 0;
+     for (auto & input : inputs) {
++        const int64_t t0 = prof ? ggml_time_us() : 0;
+         input->set_input(ubatch);
++        if (prof) {
++            auto & e = g_llama_host_prof_inputs[typeid(*input).name()];
++            e.first  += (ggml_time_us() - t0)/1000.0;
++            e.second += 1;
++        }
+     }
+ }
+ 
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index 383710c6a..c2176077a 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -2734,6 +2734,19 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+                     } else {
+                         GGML_ASSERT(!hparams.is_swa_any());
+ 
++                        // qwen4exp MTP draft: LLAMA_MTP_WINDOW=W limits the draft's attention to the
++                        // last W positions (the draft graph passes W as the sparse-attention hint)
++                        uint32_t       n_swa    = hparams.n_swa;
++                        llama_swa_type swa_type = hparams.swa_type;
++                        if (mtp_on_hybrid_qwen && arch == LLM_ARCH_QWEN4EXP) {
++                            const char * w = getenv("LLAMA_MTP_WINDOW");
++                            if (w != nullptr && atoi(w) > 0) {
++                                n_swa    = (uint32_t) atoi(w);
++                                swa_type = LLAMA_SWA_TYPE_STANDARD;
++                                LLAMA_LOG_INFO("%s: MTP draft attention window = %u\n", __func__, n_swa);
++                            }
++                        }
++
+                         res = new llama_kv_cache(
+                                 *this,
+                                 hparams,
+@@ -2745,8 +2758,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+                                 cparams.n_ctx_seq,
+                                 cparams.n_seq_max,
+                                 1,
+-                                hparams.n_swa,
+-                                hparams.swa_type,
++                                n_swa,
++                                swa_type,
+                                 nullptr,
+                                 filter,
+                                 nullptr,
+diff --git a/src/models/qwen4exp.cpp b/src/models/qwen4exp.cpp
+index 7f71b5e67..e71864be4 100644
+--- a/src/models/qwen4exp.cpp
++++ b/src/models/qwen4exp.cpp
+@@ -639,9 +639,61 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
+     const float kq_scale = hparams.f_attention_scale == 0.0f
+             ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
+ 
+-    cur = build_attn(inp_attn,
+-            nullptr, nullptr, nullptr,
+-            Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
++    // As build_attn, except that only output rows attend. Every row stores its K and V, which later
++    // draft steps read, but the graph keeps only the output rows after the projection; catch-ups and
++    // prompt chunks ask for no outputs and skip the attention (a scan of the whole cache) entirely.
++    // LLAMA_MTP_WINDOW=W: the draft cache masks cells more than W positions back, so at most W stay
++    // finite; W goes to flash attention as the sparse hint.
++    static const int32_t mtp_window = [] {
++        const char * w = getenv("LLAMA_MTP_WINDOW");
++        return w != nullptr ? std::max(0, atoi(w)) : 0;
++    }();
++
++    if (inp_attn->self_k_rot) {
++        Qcur = llama_mul_mat_hadamard(ctx0, Qcur, inp_attn->self_k_rot);
++        Kcur = llama_mul_mat_hadamard(ctx0, Kcur, inp_attn->self_k_rot);
++    }
++    if (inp_attn->self_v_rot) {
++        Vcur = llama_mul_mat_hadamard(ctx0, Vcur, inp_attn->self_v_rot);
++    }
++
++    ggml_build_forward_expand(gf, Qcur);
++    ggml_build_forward_expand(gf, Vcur);
++    ggml_build_forward_expand(gf, Kcur);
++
++    {
++        const auto * mctx_cur = inp_attn->mctx;
++
++        ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, Kcur, inp_attn->get_k_idxs(), il));
++        ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, Vcur, inp_attn->get_v_idxs(), il));
++
++        ggml_tensor * kq_mask = inp_attn->get_kq_mask();
++
++        const bool rows_only = inp_out_ids && n_outputs < n_tokens;
++        if (rows_only) {
++            GGML_ASSERT(kq_mask->ne[2] == 1 && kq_mask->ne[3] == 1 && "QWEN4EXP MTP: one stream expected");
++
++            Qcur = ggml_reshape_2d(ctx0, Qcur, n_embd_head*n_head, n_tokens);
++            Qcur = ggml_get_rows(ctx0, Qcur, inp_out_ids);
++            Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head, n_outputs);
++
++            gate = ggml_get_rows(ctx0, gate, inp_out_ids);
++
++            // get_rows yields F32; flash attention takes an F16 mask (-inf and 0 survive the round trip)
++            ggml_tensor * mask_rows = ggml_view_2d(ctx0, kq_mask, kq_mask->ne[0], n_tokens, kq_mask->nb[1], 0);
++            kq_mask = ggml_cast(ctx0, ggml_get_rows(ctx0, mask_rows, inp_out_ids), kq_mask->type);
++        }
++
++        ggml_tensor * k = mctx_cur->get_k(ctx0, il);
++        ggml_tensor * v = mctx_cur->get_v(ctx0, il);
++
++        cur = build_attn_mha(Qcur, k, v, nullptr, kq_mask, nullptr, nullptr, mtp_window, kq_scale, il);
++        cb(cur, "kqv_out", il);
++
++        if (inp_attn->self_v_rot) {
++            cur = llama_mul_mat_hadamard(ctx0, cur, inp_attn->self_v_rot);
++        }
++    }
+     cb(cur, "mtp_attn_pregate", il);
+ 
+     cur = ggml_mul(ctx0, cur, ggml_sigmoid(ctx0, gate));
+@@ -651,7 +703,10 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
+     cb(cur, "mtp_attn_out", il);
+ 
+     if (inp_out_ids) {
+-        cur    = ggml_get_rows(ctx0, cur,    inp_out_ids);
++        // cur already holds only the output rows when some rows have none
++        if (n_outputs == n_tokens) {
++            cur = ggml_get_rows(ctx0, cur, inp_out_ids);
++        }
+         inject = ggml_get_rows(ctx0, inject, inp_out_ids);
+ 
+         res_hc = ggml_reshape_2d(ctx0, res_hc, hc_dim, res_hc->ne[2]);
