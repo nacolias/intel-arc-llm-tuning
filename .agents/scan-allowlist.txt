@@ -1,0 +1,36 @@
+# Values the private-information scanner may ignore.
+# One exact value per line. A domain entry also covers its subdomains.
+# Only add values that are genuinely public. Never add a private host, address or secret.
+# Add a comment saying why each entry is safe.
+
+# Public code, model and image hosts
+github.com
+githubusercontent.com
+github.io
+huggingface.co
+hf.co
+ghcr.io
+docker.io
+docker.com
+quay.io
+pypi.org
+python.org
+
+# Vendors and upstream projects
+intel.com
+pytorch.org
+kernel.org
+vllm.ai
+openvino.ai
+readthedocs.io
+anthropic.com
+claude.ai
+claude.com
+arxiv.org
+
+# Public sites cited as sources
+reddit.com
+archive.org
+
+# Version numbers that look like IPv4 addresses
+26.18.8.2  # Intel multi-arc-bmg-offline-installer release

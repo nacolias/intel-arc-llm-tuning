@@ -1,0 +1,79 @@
+# Production config on dual-b70-5800x (2026-09): vLLM XPU 0.28.0, TP2, GPTQ INT4 G128 + BF16 MTP head, MTP2, XPU graphs, FP8 KV, 262K context.
+# Measured 78 to 84 tok/s single stream, 405 to 442 tok/s at 16 streams. Patches are listed in patches/README.md.
+# VLLM_API_KEY comes from a local .env that is not committed. Replace <your-host> with your reverse-proxy hostname.
+services:
+  vllm-a:
+    image: vllm/vllm-openai-xpu:v0.28.0
+    container_name: vllm-a
+    restart: unless-stopped
+    privileged: true
+    ipc: host
+    expose:
+      - "8081"
+    environment:
+      - VIRTUAL_HOST=<your-host>
+      - VIRTUAL_PORT=8081
+      - ZES_ENABLE_SYSMAN=1
+      - VLLM_TARGET_DEVICE=xpu
+      - ZE_FLAT_DEVICE_HIERARCHY=COMPOSITE
+      - VLLM_XPU_ENABLE_XPU_GRAPH=1
+      - VLLM_SERVER_DEV_MODE=1
+      - B70_MTP_BF16_DRAFT=1
+      - CCL_ENABLE_SYCL_KERNELS=1
+      - CCL_ENABLE_TOPO_ALGO=1
+      - CCL_TOPO_FABRIC_VERTEX_CONNECTION_CHECK=0
+      - CCL_ATL_TRANSPORT=ofi
+      - CCL_ZE_IPC_EXCHANGE=pidfd
+      - FI_PROVIDER=shm
+      - CCL_ATL_SHM=1
+      - CCL_WORKER_COUNT=1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS=1
+      - TRITON_INTEL_DEVICE_ARCH=bmg
+      - CCL_TOPO_P2P_ACCESS=1
+      - CCL_SYCL_ALLREDUCE_SIMPLE_THRESHOLD=4294967296
+      - CCL_SYCL_REDUCE_SCATTER_SIMPLE_THRESHOLD=4294967296
+      - CCL_SYCL_ALLGATHERV_SIMPLE_THRESHOLD=4294967296
+      - CCL_SYCL_ALLTOALL_TMP_BUF=1
+      - SPEC={"method":"mtp","num_speculative_tokens":2}
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - "set -e; \
+         python /patches/patch_mtp_nightly.py; \
+         python /patches/patch_mtp_boundary.py; \
+         python /patches/patch_gdn_mixed_split_v5.py; \
+         python /patches/patch_worker_affinity.py; \
+         python /patches/patch_mtp_ptr_wrap.py; \
+         python /patches/patch_sleep_graphs_v5.py; \
+         python /patches/patch_mem_report2.py; \
+         exec vllm serve /models/Qwen3.8-27B-Uncensored-GPTQ-Int4-sym-G128-MTP-BF16 \
+           --host 0.0.0.0 \
+           --port 8081 \
+           --quantization gptq \
+           --dtype float16 \
+           --tensor-parallel-size 2 \
+           --kv-cache-dtype fp8 \
+           --max-model-len 262144 \
+           --gpu-memory-utilization 0.90 \
+           --max-num-seqs 32 \
+           --max-num-batched-tokens 16384 \
+           --block-size 32 \
+           --enable-prefix-caching \
+           --language-model-only \
+           --served-model-name Qwen3.8-27B-Uncensored Qwen3.8-27B-int4-AutoRound Qwen3.8-27B-GPTQ-Int4-sym-G128-MTP-BF16 \
+           --enable-auto-tool-choice \
+           --tool-call-parser qwen3_coder \
+           --reasoning-parser qwen3 \
+           --speculative-config \"$$SPEC\" \
+           --api-key ${VLLM_API_KEY} \
+           --enable-log-requests \
+           --generation-config vllm \
+           --enable-sleep-mode"
+    volumes:
+      - "/opt/ai/models:/models:ro"
+      - "/opt/docker/vllm/patches:/patches:ro"
+      - "/opt/docker/vllm/compile_cache_a:/root/.cache/vllm"
+    devices:
+      - "/dev/dri:/dev/dri"
+    networks:
+      - llm_bridge
