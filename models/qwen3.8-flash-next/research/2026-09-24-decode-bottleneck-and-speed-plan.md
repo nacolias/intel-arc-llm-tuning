@@ -103,7 +103,7 @@ Dropped before testing: `-sm tensor` and `-sm row` (see roofline section), [#282
 
 | Stage | Short | ~10K | ~39K | ~219K | Source |
 |---|---|---|---|---|---|
-| Start of 2026-09-24 | about 37 | 43-47 | 33-38 | 16 | [baseline benchmark](../benchmarks/2026-09-24-baseline-262k-mtp.md) |
+| Start of 2026-09-24 | about 37 | 43-47 | 33-38 | 16 | [baseline benchmark](../benchmarks/2026-09-24-baseline-262k-mtp.md): fnbench on the stock unsloth checkpoint gave 34-37 / 43.3 / 33.4 / 16.1; the upper ends 47 and 38 are the abliterated checkpoint's smoke-probe decode ([quant note](2026-09-24-quants-and-uncensored-variants.md)) |
 | + fused MUL_MAT_ID, `gettid` cache, #28931 | 42-44 | 52-54 | 44-45 | – | [experiment](../experiments/2026-09-24-fused-mul-mat-id-mtp-verify.md) |
 | + GPU clock floor | 50 | 64-66 | 47-49 | – | [experiment](../experiments/2026-09-24-gpu-clock-floor.md) |
 | Production build `20260925-f47a6a5f3` (all kept patches, `-ub 1536`, sparse FA, pooled key cache) | 48.6 | 60.6 | 53.6 | 40.6 | [production benchmark](../benchmarks/2026-09-25-production-build.md) |

@@ -98,5 +98,5 @@ Kept. +41% to +55% decode at 135K, with next-token distributions inside the run-
 ## Follow-ups
 
 - [x] The QSA indexer's pooling chain became the next-largest attention-side cost (CONT pooling 10.5% of decode op time): [pooled QSA key cache](2026-09-25-pooled-qsa-key-cache.md).
-- [ ] The MTP draft layer still attends densely over the whole context (9.4% of decode op time at 135K, 1.87 ms per call).
+- [x] The MTP draft layer still attends densely over the whole context (9.4% of decode op time at 135K, 1.87 ms per call). Built on 2026-09-25: see [MTP draft QSA](2026-09-25-mtp-draft-qsa.md).
 - [ ] Prompt turns of about 60 tokens are above the 32-row limit and still use dense attention (about 4 ms per call). A union-of-rows gather might cover them.

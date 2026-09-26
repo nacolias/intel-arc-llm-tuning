@@ -31,7 +31,7 @@ A test script allocated and filled 1 GiB chunks on one B70 (31.89 GiB total), `t
 | 40 GiB | 0.7 GiB | 107.6 GiB | 11.5 GiB |
 | 44 GiB | 0.7 GiB | 103.6 GiB | 15.4 GiB |
 
-Every allocation succeeded, and the data read back intact. From about 32 GiB on, each extra GiB of "VRAM" became about 1 GiB of host RAM. The free-memory query kept reporting 0.7–0.8 GiB free throughout. A separate host-memory watchdog logged the same jump, from 2.1 to 16.4 GiB unaccounted.
+Every allocation succeeded, and the data read back intact. From about 32 GiB on, each extra GiB of "VRAM" became about 1 GiB of host RAM (a second reading of the same test at 42 GiB gave +11.2 GiB; the metrics differ). The free-memory query kept reporting 0.7–0.8 GiB free throughout. A separate host-memory watchdog logged the same jump, from 2.1 to 16.4 GiB unaccounted.
 
 ### 2. The TP=4 failures were the dma-buf export path
 

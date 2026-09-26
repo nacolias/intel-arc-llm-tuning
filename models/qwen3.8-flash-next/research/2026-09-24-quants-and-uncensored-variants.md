@@ -16,13 +16,13 @@ Every VRAM figure for an untested file is an estimate from the fitted model, whi
 
 ## Measured on our hardware
 
-**262K plus MTP fits at `-ub 1024`.** Measured 2026-09-24, one run each ([baseline benchmark](../benchmarks/2026-09-24-baseline-262k-mtp.md)):
+**262K plus MTP fits at `-ub 1024`.** Measured 2026-09-24, one run each ([baseline benchmark](../benchmarks/2026-09-24-baseline-262k-mtp.md); per-card peaks in the [raw memory log](../benchmarks/raw/2026-09-24-baseline-memory.csv)):
 
 | Config | Busiest card | Short | ~10K | ~39K | 219K | Prompt tok/s |
 |---|---|---|---|---|---|---|
-| `-ub 1024 -ts 13,13,13,10` + MTP | 27.4 GB | 34-37 | 43.3 | 33.4 | 16.1 | about 525 |
-| `-ub 1024 -ts 12,12,12,13`, no MTP | 26.1 GB | 33.4 | 31.4 | 23.4 | 7.2 | about 570 |
-| `-ub 2048`, no `-ts`, no MTP | 30.9 GB | 33.4 | 31.8 | 23.1 | – | about 700 |
+| `-ub 1024 -ts 13,13,13,10` + MTP | 27,420 MiB | 34-37 | 43.3 | 33.4 | 16.1 | about 525 |
+| `-ub 1024 -ts 12,12,12,13`, no MTP | 26,115 MiB | 33.4 | 31.4 | 23.4 | 7.2 | about 570 |
+| `-ub 2048`, no `-ts`, no MTP | 30,949 MiB | 33.4 | 31.8 | 23.1 | – | about 700 |
 | `-ub 2048` + MTP | overflowed | 0.6 tok/s: GPU3 ran out of VRAM and driver-held host RAM climbed to 57.8 GiB ([raw memory log](../benchmarks/raw/2026-09-24-baseline-memory.csv)) | | | | |
 
 Decode figures are tok/s. The `-ub 2048` + MTP failure happened because llama.cpp's memory fitter left the draft head out of its sizing. See [xe VRAM overcommit spills into host RAM](../../../findings/xe-vram-overcommit-spills-into-host-ram.md).
@@ -42,7 +42,7 @@ Assumptions for every row: 262,144 context, `-ub 1024`, f16 KV cache, `-ts` spli
 
 | Option | Download | Max card GiB | Quality evidence (from the source) | SYCL decode risk | Uncensoring method and evidence |
 |---|---|---|---|---|---|
-| [unsloth UD-Q4_K_XL](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF) (stock) | 111.3 GB | measured: 27.4 GB with MTP | KLD 0.047 vs BF16 (unsloth docs) | measured fast: Q4_K experts use the reordered MoE kernel | none |
+| [unsloth UD-Q4_K_XL](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF) (stock) | 111.3 GB | measured: 27,420 MiB with MTP | KLD 0.047 vs BF16 (unsloth docs) | measured fast: Q4_K experts use the reordered MoE kernel | none |
 | [huihui-ai abliterated UD-Q4_K_XL](https://huggingface.co/huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-GGUF) | 111.33 GB, 4 shards | measured: same as stock | same quant; abliteration damage not measured by the author | measured: same as stock | Rank-1 abliteration applied only to the 101 Q8_0 tensors; routed experts untouched. Third-party probe: 0/10 refusals vs 3/10 stock ([discussion #7](https://huggingface.co/huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-GGUF/discussions/7)) |
 | [spiritfather heretic-2 i1 IQ4_XS](https://huggingface.co/spiritfather/Qwen3.8-Flash-Next-heretic-2-i1-GGUF) | 125.31 GB, 5 shards | 22.8 / 23.7 (25.5) | KLD 0.047 vs its own Q8_0 (not comparable with unsloth's BF16 figure) | IQ4_XS / IQ4_NL experts miss the reordered kernel | Heretic, per-layer direction ([source model](https://huggingface.co/trohrbaugh/Qwen3.8-Flash-Next-heretic-2)): 0/100 refusals vs 99/100 base, KL 0.082. **Needs the `compress_ratios` fix below** |
 | [spiritfather heretic-2 static Q4_K_M](https://huggingface.co/spiritfather/Qwen3.8-Flash-Next-heretic-2-GGUF) | 140.41 GB | about 26.4 / 27.8 (28.6) | KLD 0.036 vs its own Q8_0, no imatrix | Q4_K experts: fast kernel | same as above; **needs the fix** |

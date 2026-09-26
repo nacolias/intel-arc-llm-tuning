@@ -11,7 +11,7 @@
 
 ## Result
 
-The production build decodes at 48.6-50.5 tok/s on short prompts, 60.6-67.2 at ~10k, 53.6-55.2 at ~39k and 40.6 at 219K, across three runs on 2026-09-25. It reads prompts at 577-645 tok/s at 10k-39k and 268 tok/s at 219K. The busiest card peaks at 28,957 MiB with the context filled to 219K.
+The production build decodes at 48.6-50.5 tok/s on short prompts, 60.6-67.2 at ~10k, 53.6-55.2 at ~39k and 40.6 at 219K, across three runs on 2026-09-25. It reads prompts at 568-645 tok/s at 10k-39k and 268 tok/s at 219K. The busiest card peaks at 28,957 MiB with the context filled to 219K.
 
 ## Environment
 
@@ -71,7 +71,7 @@ Repeated paragraphs and record lists are easy to predict and flatter MTP; see [t
 
 The ~10k decode varies with acceptance: 182/219 in the deploy run against 186/206 in the two later runs.
 
-Earlier builds on the same workload, for comparison:
+Earlier builds on the same workload, for comparison (the `20260924-7e5cb8f13` short figure is the median of 3 runs, not 5; source: session log, not archived):
 
 | Build | Short | ~10k | ~39k | 219K | Prompt 10k / 39k / 219K |
 |---|---|---|---|---|---|
@@ -84,3 +84,4 @@ Earlier builds on the same workload, for comparison:
 - The ASPM trial changed only PCIe link power management. Decode moved by -2.7% to +2.6% and prefill by -1.1% to -0.5%, which is inside run-to-run noise. Idle power of the four cards fell from 185 W to 27 W. See [findings/bmg-aspm-l1-idle-power.md](../../../findings/bmg-aspm-l1-idle-power.md).
 - No new PCIe correctable or uncorrectable error bits and no AER or `xe` errors appeared in the kernel log after enabling ASPM L1.
 - Short-context decode is no faster than on the dense build. Sparse FA and the pooled cache only engage at depth; short-context decode is host-bound.
+- Provenance of the [raw CSV](raw/2026-09-25-production-fnbench.csv): the short, ~10k and ~39k values of the `sparse` row (`20260925-60a598ed8`) and of the deploy session (`pooled` row), and the per-card VRAM of the `pp-test` row, were read from the service journal, which is not archived. The deploy session's 219K values and the two ASPM sessions come from saved fnbench output.

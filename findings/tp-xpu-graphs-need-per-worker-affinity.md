@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Date** | 2026-09 |
-| **Confidence** | verified-here |
+| **Confidence** | verified-here (2026-09; see the 2026-09-23 note below) |
 | **Applies to** | vLLM XPU 0.28.0 with `--tensor-parallel-size` greater than 1 and `VLLM_XPU_ENABLE_XPU_GRAPH=1` |
 | **Area** | engine / Level Zero |
 

@@ -42,7 +42,7 @@ Before the verify fix, a 4-token verify cost about 2.5x a single-token pass, so 
 
 ## Procedure
 
-For each arm: set the flags through a drop-in, restart the service (about 77-78 s to load), then run [`tools/fnbench.py`](../../../tools/fnbench.py): 5 short runs of 512 tokens (median reported), a 9,749-token and a 39,119-token prompt with 256 tokens decoded. Greedy, `ignore_eos`, no prompt cache. One pass per arm.
+For each arm: set the flags through a drop-in, restart the service (about 77-78 s to load from the page cache; a cold load from the Gen3 NVMe takes about 2.5 minutes, [baseline benchmark](../benchmarks/2026-09-24-baseline-262k-mtp.md)), then run [`tools/fnbench.py`](../../../tools/fnbench.py): 5 short runs of 512 tokens (median reported), a 9,749-token and a 39,119-token prompt with 256 tokens decoded. Greedy, `ignore_eos`, no prompt cache. One pass per arm.
 
 ## Results
 

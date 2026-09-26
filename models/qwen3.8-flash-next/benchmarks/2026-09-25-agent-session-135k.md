@@ -11,7 +11,7 @@
 
 ## Result
 
-On the production build, decode at 135K context runs at about 39 tok/s, and at about 49 tok/s when the draft is accepted often (medians 39.1 and 48.5 in two runs). The MTP step takes about 73 ms. That is up from 22-23 tok/s and about 135 ms per step on the dense build the same morning. Short prompt turns (about 60 new tokens) take about 1.1 s on every build.
+On the production build, decode at 135K context runs at about 39 tok/s, and at about 49 tok/s when the draft is accepted often (medians 39.1 and 48.5 in two runs). The MTP step takes about 73 ms. That is up from 22-23 tok/s and about 135 ms per step on the dense build the same morning. Short prompt turns (about 60 new tokens) take about 1.1 s on every build (as of 2026-09-25; 0.92 s median with the draft QSA the same evening, [raw](raw/2026-09-26-lcbench-sessions-summary.csv) run `lc-draftqsa`, and about 0.76 s on the 2026-09-26 builds with the grouped MoE GEMM and the 2D `eh_proj` product, [raw](raw/2026-09-26-cold-read-windows.csv) row `bcp5hgsyz`; see [grouped GEMM](../experiments/2026-09-26-grouped-moe-xmx-gemm.md) and [eh_proj](../experiments/2026-09-26-mtp-eh-proj-2d-product.md)).
 
 ## Environment
 
@@ -70,13 +70,13 @@ Decode is the median over turns 1-6. Step time is 256 tokens / decode tok/s / (d
 
 | Context length | TTFT (cold) | Single-stream decode tok/s |
 |---|---|---|
-| 134,862 (cold read) | 405.9-472.2 s (dense builds), 442.6 s (sandbox through 0007) | see the table above |
+| 134,862 (cold read) | 405.9-472.2 s (dense builds), 442.6 s (sandbox through 0007); all on the 2026-09-25 builds. 283-286 s on the 2026-09-26 code (N=2: 283.10 s on tree `a890bf8b0`, which is build `2b84213a4` without its diagnostic patch 0017, and 285.88 s on `2b84213a4` with `-b 3072`, [raw](raw/2026-09-26-cold-read-progress.csv); see [cold read by build](2026-09-26-cold-read-135k-by-build.md)) | see the table above |
 
 ## Observations
 
-- Real traffic matches the dense-build numbers. On 2026-09-25, one coding-agent session at 134K-140K tokens on build `20260924-7e5cb8f13` reused the cached prefix on every turn. Each turn added 23-280 tokens (prompt 1.0-2.5 s, for example 30 tokens in 1.14 s and 280 tokens in 2.47 s) and decoded 100-2,080 tokens at 23-28 tok/s (for example 2,080 tokens at 25.5 tok/s at 137,411 tokens of context).
+- Real traffic matches the dense-build numbers. On 2026-09-25, one coding-agent session at 126K-140K tokens on build `20260924-7e5cb8f13` reused the cached prefix on every turn: 23-555 new tokens per turn in 1-3.5 s, 19-33 tok/s (two readings of the 2026-09-25 journal; for example 30 tokens in 1.14 s, 280 tokens in 2.47 s, and 2,080 tokens decoded at 25.5 tok/s at 137,411 tokens of context).
 - Step time is the stable measure; tok/s also moves with acceptance, which changes with the generated text. `lc-poolA` and `lc-poolC` have the same step time and 82.7% against 62.5% acceptance.
-- Op profile of decode turns on the dense build: the 12 QSA attention calls took about 25% of op time (about 2.0 ms each), the pooling slice copies 8.2% and the MTP draft's attention 7.3%. With sparse FA, the QSA calls left the top rows; MoE down/gate/up took 11.7/8.0/7.7%, the pooling copies 10.5% and the draft attention 9.4% ([raw/2026-09-25-op-profile-135k.csv](raw/2026-09-25-op-profile-135k.csv)). The profiler slowed decode only from 22.3 to 20.1 tok/s, so decode at 135K is GPU-bound.
+- Op profile of decode turns on the dense build: the 12 QSA attention calls took about 25% of op time (about 2.0 ms each), the pooling slice copies 8.2% and the MTP draft's attention 7.3%. With sparse FA, the QSA calls left the top rows; MoE down/gate/up took 11.7/8.0/7.7%, the pooling copies 10.5% and the draft attention 9.4% ([raw/2026-09-25-op-profile-135k.csv](raw/2026-09-25-op-profile-135k.csv); profile window not archived; shares as recorded on 2026-09-25). The profiler slowed decode only from 22.3 to 20.1 tok/s, so decode at 135K is GPU-bound.
 - Prompt-only turns (~60 tokens) are MoE-bound: `MUL_MAT_ID` down/gate/up take 46% of op time; dense QSA attention takes about 4 ms per call because 60 rows exceed the sparse path's limit.
 - Next-token distributions (teacher-forced, 128 positions) matched between arms within run-to-run noise; see [raw/2026-09-25-klprobe.csv](raw/2026-09-25-klprobe.csv).
 - Runs `lc-dense`, `lc-spC`, `lc-pooloff` and `lc-poolC` started on a cached prefix, so their turn 0 re-read only 1,540 tokens.

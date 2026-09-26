@@ -16,3 +16,6 @@ Lessons that hold beyond a single model. One file per finding, started from [`te
 | [llama.cpp SYCL MoE matmuls sync the host and run one GEMM per expert for batches over 8 tokens](llama-cpp-sycl-moe-prefill-host-sync.md) | engine | verified-here, upstream-documented | 2026-09-25 |
 | [ASPM L1 on the B70 links cuts idle power from about 46 W to 5 W per card](bmg-aspm-l1-idle-power.md) | power / host | verified-here | 2026-09-25 |
 | [xpu-smi run as root wakes idle B70s and reports twice their idle power](xpu-smi-as-root-wakes-gpus.md) | power / runtime | verified-here | 2026-09-25 |
+| [A llama-server restart empties the prompt cache, and a long-context agent then waits minutes for a cold re-read](llama-server-restart-drops-prefix-cache.md) | engine / host (operations) | verified-here | 2026-09-25 |
+| [llama.cpp SYCL runs a MUL_MAT with a 3D activation as one product per slice, re-reading the weight each time](llama-cpp-sycl-batched-mul-mat-loops-per-slice.md) | engine | verified-here | 2026-09-26 |
+| [llama.cpp SYCL reorders Q4_K/Q5_K/Q6_K MoE expert weights lazily, so a prompt kernel meets two layouts](llama-cpp-sycl-kquant-experts-reordered-lazily.md) | engine / quantization | verified-here, upstream-documented | 2026-09-26 |

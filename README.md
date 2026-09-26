@@ -85,7 +85,7 @@ See [`models/README.md`](models/README.md) for the full status board.
 | Model | Best single-stream | Status |
 |---|---|---|
 | [Qwen3.8-27B](models/qwen3.8-27b/) | 78 to 84 tok/s (dual B70, TP2, MTP2) | active tuning |
-| [Qwen3.8-Flash-Next](models/qwen3.8-flash-next/) | 48.6 to 50.5 tok/s short, about 39 tok/s at 135K context (quad B70, llama.cpp SYCL layer split, MTP) | production |
+| [Qwen3.8-Flash-Next](models/qwen3.8-flash-next/) | 43.7 to 48.7 tok/s at 135K context, greedy code workload; cold 135K read about 284 s ([benchmark](models/qwen3.8-flash-next/benchmarks/2026-09-26-cold-read-135k-by-build.md)); 48.6 to 50.5 tok/s short on build `20260925-f47a6a5f3` ([benchmark](models/qwen3.8-flash-next/benchmarks/2026-09-25-production-build.md)) (quad B70, llama.cpp SYCL layer split, MTP) | production |
 
 ## Adding a new model
 

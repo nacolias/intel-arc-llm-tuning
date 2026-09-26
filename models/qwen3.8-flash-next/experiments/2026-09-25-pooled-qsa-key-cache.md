@@ -92,6 +92,6 @@ Kept. The MTP step at 135K fell by about 23%, and decode at 219K more than doubl
 
 ## Follow-ups
 
-- [ ] The MTP draft layer is now the largest attention cost: dense over the whole context, 9.4% of decode op time at 135K.
+- [x] The MTP draft layer is now the largest attention cost: dense over the whole context, 9.4% of decode op time at 135K. Built on 2026-09-25: see [MTP draft QSA](2026-09-25-mtp-draft-qsa.md).
 - [ ] Decide whether to fix the 513th-block deviation. It would change output relative to today and match the reference.
-- [ ] Prompt turns (~60 tokens, about 1.1 s at 135K) are MoE-bound; see [the MUL_MAT_ID experiment](2026-09-25-mmid-multitoken-prompt-turns.md).
+- [ ] Prompt turns (~60 tokens, about 1.1 s at 135K) are MoE-bound; see [the MUL_MAT_ID experiment](2026-09-25-mmid-multitoken-prompt-turns.md). (As of 2026-09-25. Later: 0.92 s median with the draft QSA, [raw](../benchmarks/raw/2026-09-26-lcbench-sessions-summary.csv) run `lc-draftqsa`, then about 0.76 s on 2026-09-26 after the grouped MoE GEMM and the 2D `eh_proj` product, [raw](../benchmarks/raw/2026-09-26-cold-read-windows.csv) row `bcp5hgsyz`; see [grouped GEMM](2026-09-26-grouped-moe-xmx-gemm.md) and [eh_proj](2026-09-26-mtp-eh-proj-2d-product.md).)
