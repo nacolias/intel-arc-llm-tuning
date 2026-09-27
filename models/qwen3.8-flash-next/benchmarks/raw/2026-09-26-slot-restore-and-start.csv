@@ -1,0 +1,26 @@
+# Slot restore from disk, restore-then-save roundtrips, service start times and a greedy reproducibility check, quad-b70-5800x-pex88096, 2026-09-26. From test-window outputs and the service journal (not archived). 135,226-token conversation slot (3,863,800,112-byte target file, 316,428,932-byte draft file).
+build,event,value,unit,note
+2b84213a4 (production),slot_restore,3156.0,ms,POST /slots/0?action=restore on the running production server
+2b84213a4 (production),roundtrip,byte-identical,,restore then save: target and draft files equal to the originals (cmp)
+8f95cb5d2 (pinned staging),slot_restore,984.3,ms,test window fix v1
+8f95cb5d2 (pinned staging),slot_restore,991.9,ms,test window fix v1
+8f95cb5d2 (pinned staging),slot_restore,980.6,ms,test window fix v1
+8f95cb5d2 (pinned staging),slot_restore,1052.6,ms,test window fix v1 (profiling queues on)
+8f95cb5d2 (pinned staging),slot_restore,988.4,ms,test window fix v1 (--spec-draft-n-max 4 --spec-draft-p-min 0.5)
+8f95cb5d2 (pinned staging),roundtrip,byte-identical,,restore then save: target and draft files equal to the originals (cmp)
+5c258f538 (deployed),slot_restore,988.2,ms,test window fix v2
+5c258f538 (deployed),slot_restore,998.3,ms,test window fix v2
+5c258f538 (deployed),slot_restore,986.5,ms,test window fix v2 (--backend-sampling)
+5c258f538 (deployed),slot_restore,1009,ms,slot-cache.sh restore after the production deploy (wall time of the script)
+2b84213a4 (production),start_to_ready,79,s,journal: serve script start 21:09:56 to the slot-cache restore line 21:11:15 UTC (includes the ~3.2 s restore)
+2b84213a4 (production),start_to_ready,78,s,journal: 21:51:25 to 21:52:43 UTC (includes the ~3.2 s restore)
+2b84213a4 (production),start_to_ready,78,s,journal: 22:06:18 to 22:07:36 UTC (includes the ~3.2 s restore)
+8f95cb5d2 (test build),start_to_ready,35,s,journal: 21:47:20 to the restore-refused line 21:47:55 UTC (no restore)
+8f95cb5d2 (test build),start_to_ready,33,s,journal: 21:48:30 to 21:49:03 UTC
+8f95cb5d2 (test build),start_to_ready,33,s,journal: 21:50:10 to 21:50:43 UTC
+5c258f538 (test build),start_to_ready,32,s,journal: 22:02:55 to 22:03:27 UTC
+5c258f538 (test build with --backend-sampling),start_to_ready,33,s,journal: 22:04:54 to 22:05:27 UTC
+5c258f538 (deployed),start_to_ready,33,s,journal: 22:10:10 to 22:10:43 UTC (production deploy; restore then run by hand after re-signing)
+2b84213a4 (production),greedy_repeat,32/32,tokens shared with run 0,run 0: restore slot then 32 greedy tokens (ignore_eos) of a new assistant turn
+2b84213a4 (production),greedy_repeat,19/32,tokens shared with run 0,run 1: restore the same slot file then the same request
+2b84213a4 (production),greedy_repeat,1/32,tokens shared with run 0,run 2: restore the same slot file then the same request

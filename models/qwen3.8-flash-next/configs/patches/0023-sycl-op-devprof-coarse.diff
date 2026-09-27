@@ -1,0 +1,50 @@
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index f40e2e9af..c6687d402 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -6289,13 +6289,22 @@ static double  g_devprof_host_ms[GGML_SYCL_MAX_DEVICES] = {};
+ static int64_t g_devprof_graphs[GGML_SYCL_MAX_DEVICES] = {};
+ static std::chrono::steady_clock::time_point g_devprof_last = std::chrono::steady_clock::now();
+ 
++static bool g_devprof_coarse = false;   // the switch file starts with "coarse": one span per graph
++
+ static bool ggml_sycl_devprof_active() {
+     static bool active = false;
+     static auto last = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+     const auto now = std::chrono::steady_clock::now();
+     if (now - last > std::chrono::milliseconds(500)) {
+         last   = now;
+-        active = access("/tmp/ggml-sycl-op-devprof", F_OK) == 0;
++        FILE * f = fopen("/tmp/ggml-sycl-op-devprof", "r");
++        active = f != nullptr;
++        g_devprof_coarse = false;
++        if (f) {
++            char buf[8] = {};
++            g_devprof_coarse = fread(buf, 1, 6, f) == 6 && strncmp(buf, "coarse", 6) == 0;
++            fclose(f);
++        }
+     }
+     return active;
+ }
+@@ -6313,7 +6322,9 @@ struct ggml_sycl_devprof_scope {
+         marks.push_back({ ctx->stream()->ext_oneapi_submit_barrier(), std::string() });
+     }
+ 
+-    ~ggml_sycl_devprof_scope() { marks[idx].key = ggml_sycl_op_prof_key(node, i != i0); }
++    ~ggml_sycl_devprof_scope() {
++        marks[idx].key = g_devprof_coarse ? std::string("[graph span]") : ggml_sycl_op_prof_key(node, i != i0);
++    }
+ };
+ 
+ // read every finished graph of this device (oldest first, stop at the first unfinished one)
+@@ -6411,7 +6422,9 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
+         }
+         std::optional<ggml_sycl_devprof_scope> devprof;
+         if (devprof_on) {
+-            devprof.emplace(sycl_ctx, node, i);
++            if (!g_devprof_coarse || g_devprof_cur[sycl_ctx->device].marks.empty()) {
++                devprof.emplace(sycl_ctx, node, i);
++            }
+         }
+ 
+         const int nodes_to_skip = ggml_sycl_fuse(*sycl_ctx, cgraph, i);

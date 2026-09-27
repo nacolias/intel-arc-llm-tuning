@@ -1,0 +1,23 @@
+code,build,round,direction,client_wall_s,prompt_tokens,prompt_s,outside_eval_s
+production,2b84213a4,0,away,8.33,2010,5.89,2.45
+production,2b84213a4,0,back,3.16,3,0.21,2.95
+production,2b84213a4,1,away,2.75,4,0.15,2.6
+production,2b84213a4,1,back,3.24,6,0.29,2.95
+production,2b84213a4,0,away,2.68,4,0.16,2.52
+production,2b84213a4,0,back,3.13,3,0.16,2.97
+production,2b84213a4,0,away,2.67,4,0.15,2.52
+production,2b84213a4,0,back,3.12,3,0.16,2.96
+before,2b84213a4 + 0018-0020 (no fix; swap timing logs; profiling queues on),0,away,5.99,2010,3.38,2.61
+before,2b84213a4 + 0018-0020 (no fix; swap timing logs; profiling queues on),0,back,6.58,1022,3.61,2.97
+before,2b84213a4 + 0018-0020 (no fix; swap timing logs; profiling queues on),1,away,2.97,4,0.16,2.81
+before,2b84213a4 + 0018-0020 (no fix; swap timing logs; profiling queues on),1,back,3.20,6,0.28,2.91
+fix v1,"8f95cb5d2 (buffer reuse by size, pinned staging)",0,away,8.35,2010,5.92,2.43
+fix v1,"8f95cb5d2 (buffer reuse by size, pinned staging)",0,back,0.90,3,0.21,0.68
+fix v1,"8f95cb5d2 (buffer reuse by size, pinned staging)",1,away,2.68,4,0.14,2.54
+fix v1,"8f95cb5d2 (buffer reuse by size, pinned staging)",1,back,1.24,6,0.28,0.96
+fix v2,"5c258f538 (buffer reuse by capacity with 1/8 slack, pinned staging); deployed",0,away,8.28,2010,5.85,2.43
+fix v2,"5c258f538 (buffer reuse by capacity with 1/8 slack, pinned staging); deployed",0,back,0.89,3,0.21,0.68
+fix v2,"5c258f538 (buffer reuse by capacity with 1/8 slack, pinned staging); deployed",1,away,0.78,4,0.14,0.64
+fix v2,"5c258f538 (buffer reuse by capacity with 1/8 slack, pinned staging); deployed",1,back,0.88,6,0.28,0.60
+fix v2,"5c258f538 (buffer reuse by capacity with 1/8 slack, pinned staging); deployed",2,away,0.89,4,0.14,0.75
+fix v2,"5c258f538 (buffer reuse by capacity with 1/8 slack, pinned staging); deployed",2,back,0.87,6,0.27,0.60

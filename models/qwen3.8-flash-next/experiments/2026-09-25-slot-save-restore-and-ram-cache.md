@@ -123,3 +123,9 @@ Kept, in production since 2026-09-25. A restart now costs about 90 s plus a 4 s 
 - [ ] Conversations with images cannot be saved. Find out whether the refusal is in the server or in the multimodal state and whether it can be lifted.
 - [ ] Upstream the draft save/restore (patch 0010); the upstream server saves only the target context.
 - [ ] Add a size check: the save is refused or truncated if the disk fills; `TimeoutStopSec=240` assumes about 5 GB writes in well under a minute.
+
+## Update 2026-09-26
+
+- Idle autosave added: [2026-09-26-slot-autosave.md](2026-09-26-slot-autosave.md).
+- The RAM-cache reload at 135K, unmeasured here, is measured in [2026-09-26-prompt-cache-swap-speedup.md](2026-09-26-prompt-cache-swap-speedup.md): about 2.95 s in and 2.5 s out on this build, about 0.6 s each after patches 0021-0022. On real traffic these swaps took a median 5.07 s per conversation switch, 5.7% of the server's busy time ([real agent traffic](../benchmarks/2026-09-26-real-agent-traffic.md)).
+- A saved slot restores into a server with a different `--spec-draft-n-max` (4 against 3; checked on 2026-09-26). The draft length sets the target's number of recurrent-state snapshots, but not the saved layout.

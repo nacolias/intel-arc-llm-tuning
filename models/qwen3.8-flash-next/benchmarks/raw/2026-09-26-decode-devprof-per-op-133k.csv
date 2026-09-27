@@ -1,0 +1,87 @@
+"# GGML_SYCL_OP_DEVPROF per-op mode (patch 0020) over 3 replayed turns at 132.6K-134.2K (754 verify steps, 2,243 tokens, 1,489 accepted; the printed 20 s blocks cover 612 of the steps: card 0 ran 612 graphs), build 556c342cb, production draft flags. A barrier before every op doubled the step time (24.7 tok/s against about 46), and each device's host submit time exceeded its device op time, so op times are paced by the host: use call counts and the largest ops only. Top 60 rows per 20 s block, summed. quad-b70-5800x-pex88096, 2026-09-26."
+op_key,total_ms,calls
+MUL_MAT_ID ffn_moe_down,4827.78,31173
+MUL_MAT_ID ffn_moe_gate,3069.86,31173
+MUL_MAT_ID ffn_moe_up,3018.45,31173
+MUL_MAT result_output,2918.46,2433
+MUL_MAT hc_inject,1927.97,62346
+MUL_MAT linear_attn_out,1419.72,22012
+MUL_MAT z,1274.76,22012
+MUL_MAT hc_gate,1137.77,64779
+MUL_MAT ffn_moe_logits,623.6,31173
+MUL_MAT Qcur_full,549.03,7338
+MUL_MAT attn_output,475.46,7338
+RMS_NORM+ norm,461.14,60479
+MUL_MAT shared_expert_gate,455.01,31173
+MUL_MAT ffn_gate,422.77,31173
+MUL_MAT ffn_shexp,385.7,31173
+MUL_MAT ffn_up,367.57,31173
+DSV4_HC_PRE hc_mixed,339.63,58700
+MUL_MAT node_24,309.39,482
+ARGSORT ffn_moe_argsort,307.96,21402
+CPY attn_inp_kq_mask (copy),301.56,9161
+MUL ffn_moe_weighted,219.56,31173
+CONT  (view) (cont),211.52,31785
+FLASH_ATTN_EXT node_1206,202.1,612
+FLASH_ATTN_EXT node_1797,201.26,612
+FLASH_ATTN_EXT node_3570,199.54,611
+FLASH_ATTN_EXT node_7116,199.07,612
+FLASH_ATTN_EXT node_615,198.84,612
+FLASH_ATTN_EXT node_5343,198.23,611
+FLASH_ATTN_EXT node_6525,198.22,612
+FLASH_ATTN_EXT node_2979,197.89,611
+FLASH_ATTN_EXT node_4161,197.53,611
+FLASH_ATTN_EXT node_4752,197.35,611
+FLASH_ATTN_EXT node_2388,196.31,611
+FLASH_ATTN_EXT node_5934,195.24,612
+DSV4_HC_POST hc_combine,187.3,29350
+[small graph] MUL_MAT node_12,186.69,612
+DSV4_HC_POST l_last,180.73,28738
+SIGMOID shared_expert_gate_sigmoid,178.49,31173
+CONT  (reshaped) (view) (cont),172.35,39077
+SOFT_MAX+ ffn_moe_probs,167.14,9771
+ADD ffn_moe_out,163.2,31173
+MUL_MAT Vcur,150.71,7338
+SOFT_MAX ffn_moe_probs,148.11,21402
+MUL ffn_shexp_gated,147.12,31173
+SWIGLU ffn_moe_swiglu,144.37,31173
+SSM_CONV+ conv_output_raw,142.99,22012
+ADD ffn_out,141.38,29350
+SIGMOID beta_sigmoid,129.93,22012
+MUL_MAT mtp_Qcur_full,129.46,1823
+SWIGLU ffn_swiglu,116.01,31173
+MUL gate,111.11,22012
+FLASH_ATTN_EXT node_108,108.87,1823
+GET_ROWS ffn_moe_weights,108.58,21402
+DIV ffn_moe_weights_norm,102.77,21402
+MUL_MAT mtp_attn_out,95.27,1823
+SOFTPLUS a_softplus,88.96,22012
+ADD+ indexer_score,77.81,6750
+MUL_MAT node_12,62.23,1370
+SUM_ROWS ffn_moe_weights_sum,60.22,16041
+CLAMP ffn_moe_weights_sum_clamped,59.46,16041
+MUL_MAT node_84,43.87,995
+MUL_MAT node_25,24.52,153
+MUL_MAT node_5716,23.36,154
+MUL_MAT node_3801,22.95,153
+MUL_MAT node_1886,22.77,153
+MUL_MAT Kcur,16.77,1527
+TOP_K node_7107,0.07,1
+MUL_MAT node_6023,0.06,1
+MUL_MAT node_6307,0.06,1
+MUL_MAT node_6614,0.06,1
+MUL_MAT node_6898,0.06,1
+MUL_MAT node_6165,0.06,1
+MUL_MAT node_6756,0.06,1
+TOP_K node_6516,0.05,1
+TOP_K node_5925,0.05,1
+MUL_MAT node_5910,0.04,1
+MUL_MAT node_6501,0.04,1
+MUL_MAT node_7092,0.04,1
+MUL_MAT node_5752,0.03,1
+MUL_MAT node_5758,0.03,1
+GATED_DELTA_NET+ node_5762,0.03,1
+[device 0 totals: ops_ms / host_submit_ms / graphs],9621 / 11047,612
+[device 1 totals: ops_ms / host_submit_ms / graphs],9384 / 11076,611
+[device 2 totals: ops_ms / host_submit_ms / graphs],9662 / 11189,611
+[device 3 totals: ops_ms / host_submit_ms / graphs],14349 / 12612,3047

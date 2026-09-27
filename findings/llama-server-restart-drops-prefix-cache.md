@@ -61,3 +61,9 @@ The 3.92 s first turn is the pooled QSA (Qwen sparse attention) key cache rebuil
 - The saved state depends on llama.cpp's session-file format and the KV layout. Whether a save survives an upstream format change is UNVERIFIED; the signature includes the build directory so that it is never tried by accident.
 - The RAM-cache reload was timed once at about 40K tokens and not archived; the 135K case is unmeasured.
 - Not tested with more than one slot, with unified KV, or on vLLM.
+
+## Update 2026-09-26
+
+- **Who cancelled the 166K re-read.** The server journal shows the re-read starting at 22:47:31 UTC on 2026-09-25 and `stop: cancel task` at 22:55:58, 507 s in, at progress 0.88. That is not a round timeout. The reverse proxy's read and send timeouts are 1,800 s, and the forwarder behind it copies bytes with no timeout. A second request 4 s later was cancelled after 0.5 s. That points to the client being stopped by hand (estimate). The partial prefill survived the cancel: the slot was released with 148,148 tokens, and the next request found them. Details in [real agent traffic](../models/qwen3.8-flash-next/benchmarks/2026-09-26-real-agent-traffic.md).
+- **Periodic saves while idle now exist.** A 5-minute timer saves after an idle period ([idle autosave](../models/qwen3.8-flash-next/experiments/2026-09-26-slot-autosave.md)), so a crash loses only the turns since the last idle spell.
+- **The 135K RAM-cache reload is now measured.** Before our patches 0021-0022 a swap-in took about 2.95 s and a swap-out about 2.5 s; with them, about 0.6 s each. A slot restore from disk went from 3.2 s to 1.0 s ([swap speedup](../models/qwen3.8-flash-next/experiments/2026-09-26-prompt-cache-swap-speedup.md)).

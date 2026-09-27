@@ -1,0 +1,76 @@
+diff --git a/tools/server/server-task.cpp b/tools/server/server-task.cpp
+index c0102805d..30decb5c5 100644
+--- a/tools/server/server-task.cpp
++++ b/tools/server/server-task.cpp
+@@ -1760,8 +1760,28 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
+     std::vector<uint8_t> state_data_tgt;
+     std::vector<uint8_t> state_data_dft;
+ 
++    // reuse a spare host buffer whose capacity fits and is at most twice the size: resizing within
++    // the capacity keeps its pages, so at most the growth since its last use is faulted in and zeroed
++    auto take_spare = [](std::vector<uint8_t> & spare, std::vector<uint8_t> & dst, size_t need) {
++        if (need > 0 && spare.capacity() >= need && spare.capacity() <= 2*need) {
++            dst = std::move(spare);
++            dst.resize(need);
++            spare = std::vector<uint8_t>();
++        }
++    };
++    take_spare(spare_main, state_data_tgt, state_size_tgt);
++    take_spare(spare_drft, state_data_dft, state_size_dft);
++
+     // check if we can allocate enough memory for the new state
+     try {
++        // fresh buffers get 1/8 slack capacity (never touched, so not resident): the conversation is a
++        // little longer the next time it is saved, and its buffer should still fit
++        if (state_data_tgt.capacity() < state_size_tgt) {
++            state_data_tgt.reserve(state_size_tgt + state_size_tgt/8);
++        }
++        if (state_data_dft.capacity() < state_size_dft) {
++            state_data_dft.reserve(state_size_dft + state_size_dft/8);
++        }
+         state_data_tgt.resize(state_size_tgt);
+         state_data_dft.resize(state_size_dft);
+     } catch (const std::bad_alloc & e) {
+@@ -1838,8 +1858,11 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+                 return false;
+             }
+ 
+-            data.clear();
+-            data.shrink_to_fit();
++            // keep the larger buffer for the next save instead of freeing it
++            if (data.capacity() > spare_main.capacity()) {
++                spare_main = std::move(data);
++            }
++            data = std::vector<uint8_t>();
+         }
+ 
+         {
+@@ -1856,8 +1879,10 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+                     return false;
+                 }
+ 
+-                data.clear();
+-                data.shrink_to_fit();
++                if (data.capacity() > spare_drft.capacity()) {
++                    spare_drft = std::move(data);
++                }
++                data = std::vector<uint8_t>();
+             }
+         }
+ 
+diff --git a/tools/server/server-task.h b/tools/server/server-task.h
+index 9c99143f8..2887cd7e7 100644
+--- a/tools/server/server-task.h
++++ b/tools/server/server-task.h
+@@ -623,6 +623,11 @@ struct server_prompt_cache {
+     // in tokens, 0 = no limit
+     size_t limit_tokens = 0;
+ 
++    // host buffers of the last state loaded back into a slot, kept for the next save: a fresh
++    // multi-GiB vector costs about 0.5 s per GiB in page faults and zero-fill. Not counted in size().
++    std::vector<uint8_t> spare_main;
++    std::vector<uint8_t> spare_drft;
++
+     size_t size() const;
+ 
+     size_t n_tokens() const;

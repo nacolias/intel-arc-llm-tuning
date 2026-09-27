@@ -1,0 +1,93 @@
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 33dcf5a77..92f9c318c 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -3155,10 +3155,18 @@ size_t llama_context::state_seq_get_data(llama_seq_id seq_id, uint8_t * dst, siz
+     }
+ 
+     try {
++        const int64_t t0 = ggml_time_us();
+         io->write(&io_magic, sizeof(io_magic));
+         io->write(&seq_id, sizeof(seq_id));
+ 
+-        return state_seq_write_data(*io, seq_id, flags);
++        const size_t n = state_seq_write_data(*io, seq_id, flags);
++        const int64_t t1 = ggml_time_us();
++        io.reset(); // the host writer copies the tensors out here
++        if (n >= (size_t) 64*1024*1024) {
++            LLAMA_LOG_INFO("%s: seq %d, %.1f MiB: walk %.1f ms, device->host copies %.1f ms\n", __func__, seq_id,
++                           n/1048576.0, (t1 - t0)/1000.0, (ggml_time_us() - t1)/1000.0);
++        }
++        return n;
+     } catch (const std::exception & err) {
+         LLAMA_LOG_ERROR("%s: error saving state: %s\n", __func__, err.what());
+         return 0;
+@@ -3197,7 +3205,15 @@ size_t llama_context::state_seq_set_data(llama_seq_id seq_id, const uint8_t * sr
+         llama_seq_id seq_id_read;
+         io->read(&seq_id_read, sizeof(seq_id_read));
+ 
+-        return state_seq_read_data(*io, seq_id, flags);
++        const int64_t t0 = ggml_time_us();
++        const size_t n = state_seq_read_data(*io, seq_id, flags);
++        const int64_t t1 = ggml_time_us();
++        io.reset(); // the host reader copies the tensors in here
++        if (n >= (size_t) 64*1024*1024) {
++            LLAMA_LOG_INFO("%s: seq %d, %.1f MiB: walk %.1f ms, host->device copies %.1f ms\n", __func__, seq_id,
++                           n/1048576.0, (t1 - t0)/1000.0, (ggml_time_us() - t1)/1000.0);
++        }
++        return n;
+     } catch (const std::exception & err) {
+         LLAMA_LOG_ERROR("%s: error loading state: %s\n", __func__, err.what());
+         return 0;
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 3ff7e5b48..0c72c99dc 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -309,15 +309,23 @@ struct server_slot {
+         SRV_TRC(" - saving prompt with length %d, total state size = %.3f MiB (draft: %.3f MiB)\n",
+                 (int) prompt.tokens.size(), cur_size / (1024.0 * 1024.0), cur_size_dft / (1024.0 * 1024.0));
+ 
++        const int64_t t0 = ggml_time_us();
+         auto * cur = prompt_cache.alloc(prompt, cur_size_tgt, cur_size_dft);
+         if (cur == nullptr) {
+             return false;
+         }
++        const int64_t t1 = ggml_time_us();
+ 
+         llama_state_seq_get_data_ext(ctx_tgt, cur->data.main.data(), cur_size_tgt, id, LLAMA_STATE_SEQ_FLAGS_NONE);
++        const int64_t t2 = ggml_time_us();
+         if (ctx_dft) {
+             llama_state_seq_get_data_ext(ctx_dft, cur->data.drft.data(), cur_size_dft, id, LLAMA_STATE_SEQ_FLAGS_NONE);
+         }
++        if (cur_size >= (size_t) 64*1024*1024) {
++            SRV_INF("prompt_save: %d tokens, %.1f MiB: host alloc %.1f ms, target state %.1f ms, draft state %.1f ms\n",
++                    (int) prompt.tokens.size(), cur_size/1048576.0, (t1 - t0)/1000.0, (t2 - t1)/1000.0,
++                    (ggml_time_us() - t2)/1000.0);
++        }
+ 
+         return true;
+     }
+diff --git a/tools/server/server-task.cpp b/tools/server/server-task.cpp
+index 0d3beb313..c0102805d 100644
+--- a/tools/server/server-task.cpp
++++ b/tools/server/server-task.cpp
+@@ -1824,6 +1824,8 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+ 
+     if (it_best != states.end()) {
+         SRV_TRC(" - found better prompt with f_keep = %.3f, f_sim = %.3f\n", f_keep_best, f_sim_best);
++        const int64_t t_load0 = ggml_time_us();
++        const size_t load_size = it_best->size();
+ 
+         {
+             auto & data = it_best->data.main;
+@@ -1862,6 +1864,10 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+         prompt = std::move(it_best->prompt);
+ 
+         states.erase(it_best);
++        if (load_size >= (size_t) 64*1024*1024) {
++            SRV_INF("prompt cache load: %d tokens, %.1f MiB in %.1f ms (state copies and freeing the host copy)\n",
++                    (int) prompt.tokens.size(), load_size/1048576.0, (ggml_time_us() - t_load0)/1000.0);
++        }
+     }
+ 
+     return true;
