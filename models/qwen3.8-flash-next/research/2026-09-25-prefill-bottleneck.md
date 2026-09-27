@@ -44,7 +44,7 @@ The main thread ran at 100% of one core. Per-card compute busy was 17-28% (sum 9
 | Dense flash attention, 12 sparse-attention layers | about 1.6-1.9% each (about 4 ms per call) |
 | CONT, indexer pooling | 3.3% |
 
-Dense flash attention runs here because 60 query rows exceed the sparse path's 32-row limit (`GGML_SYCL_SPARSE_FA_MAX_Q`, patch 0006). For scale: a 19-token prompt at short context takes 0.3 s, and real agent turns at 134K-140K context added 23-280 tokens in about 1.0-2.5 s ([agent-session benchmark](../benchmarks/2026-09-25-agent-session-135k.md)).
+Dense flash attention runs here because 60 query rows exceed the sparse path's 32-row limit (`GGML_SYCL_SPARSE_FA_MAX_Q`, patch 0006). For scale: a 19-token prompt at short context takes 0.3 s, and real agent turns at 126K-140K context added 23-555 tokens in 1-3.5 s (two readings of the 2026-09-25 journal; [agent-session benchmark](../benchmarks/2026-09-25-agent-session-135k.md)).
 
 ## Mechanism (source)
 
@@ -59,7 +59,7 @@ Line numbers are for the stock PR #28243 tree at `6fcaa16`; our patches shift th
 | Experiment | Result | Status |
 |---|---|---|
 | Pipeline parallelism: drop `-ot`, `-b 4096` ("pipeline parallelism enabled", 5 graph splits) | Prefill 552.3 tok/s at 9.7K and 556.2 at 39K, against a baseline of 552-630 and 553-560: no gain. Cost: 2.6-2.9 GiB more VRAM per card, 2.5-5.7 GiB more GTT (graphics translation table, host-mapped) memory per card, driver-held host RAM 27 GiB vs 16 | reverted ([experiment](../experiments/2026-09-25-pipeline-parallel-prefill.md)) |
-| `-ub 1536 -ts 12,13,13,11` vs `-ub 1024 -ts 13,13,13,10` | Prefill +4.5% at 39K (582.8 vs 553-560), +6% at 219K (270.0 vs 254.5); decode unchanged within noise; fullest card 28.2 GiB | kept ([experiment](../experiments/2026-09-25-ubatch-1536.md)) |
+| `-ub 1536 -ts 12,13,13,11` vs `-ub 1024 -ts 13,13,13,10` | Prefill +4.5% at 39K (582.8 vs 553-560), +6% at 219K (270.0 vs 254.5; comparison against the unpatched build without the clock floor); decode unchanged within noise; fullest card 28.2 GiB | kept ([experiment](../experiments/2026-09-25-ubatch-1536.md)) |
 | Fused per-token MUL_MAT_ID up to 512 tokens (`GGML_SYCL_MMID_MULTITOKEN_MAX=512`) | ~60-token turns 1.08-1.31 s (unchanged vs 1.11-1.35); ~400-token turns 3.40-3.64 s (worse vs 2.73-2.94) | reverted ([experiment](../experiments/2026-09-25-mmid-multitoken-prompt-turns.md)) |
 
 The per-token fused path reads each selected expert once per token, so it loses on longer batches. It also shows that ~60-token turns at 135K are not bound by the host-synced MoE loop alone.
@@ -68,7 +68,7 @@ The per-token fused path reads each selected expert once per token, so it loses 
 
 | Option | What it removes | Evidence | Status |
 |---|---|---|---|
-| Grouped MoE GEMM kernel | the per-expert GEMM launches and oneDNN primitive setup | Upstream [#29245](https://github.com/ggml-org/llama.cpp/pull/29245) "sycl: add grouped MoE XMX GEMM" (open as of 2026-09-25) dispatches only IQ types (IQ4_NL, IQ3_S, IQ4_XS, IQ3_XXS, IQ2_*, IQ1_*) and keeps the host wait. Author reports +34% prompt processing and +0.95% decode | UNVERIFIED. Our experts are K-quants and Q5_1 (43 of 48 `down_exps` are Q5_1), with no IQ types, so it would not engage as posted |
+| Grouped MoE GEMM kernel | the per-expert GEMM launches and oneDNN primitive setup | Upstream [#29245](https://github.com/ggml-org/llama.cpp/pull/29245) "sycl: add grouped MoE XMX GEMM" (open as of 2026-09-25) dispatches only IQ types (IQ4_NL, IQ3_S, IQ4_XS, IQ3_XXS, IQ2_*, IQ1_*) and keeps the host wait. Author reports +34% prompt processing and +0.95% decode | UNVERIFIED. Our experts are K-quants and Q5_1 (43 of 48 `down_exps` are Q5_1), with no IQ types, so it would not engage as posted. Extended locally on 2026-09-26 to Q4_K, Q5_K, Q5_1 and Q8_0 experts (patches 0012-0015): see [grouped GEMM](../experiments/2026-09-26-grouped-moe-xmx-gemm.md) |
 | Device-side routing | the 144 host syncs per micro-batch | Compute per-expert token counts and offsets on the GPU, then a grouped GEMM that reads them from device memory. No SYCL implementation exists | design only |
 | Async split copies and device-side events | the blocking hop at every split; a prerequisite for pipeline parallelism to overlap cards | Feature request [#29398](https://github.com/ggml-org/llama.cpp/issues/29398) (open); a de-dpct / out-of-order queue PR (#29190) was closed unmerged | not started |
 | Host trims | part of the 28.5% spin, 16% oneDNN and 14% libc | Cache one oneDNN primitive per expert shape; avoid per-GEMM allocation and f16 dequantize buffers; replace the spin wait | ideas; gains unmeasured |
@@ -86,7 +86,7 @@ The per-token fused path reads each selected expert once per token, so it loses 
 
 ## Relevance
 
-Agent sessions reuse a cached prefix, so the prompt turns that matter add a few dozen to a few hundred tokens at 130K+ context and take about 1-3.5 s. Cold reads of a 135K prompt take 405-472 s. A fix that only helps large batches (grouped GEMM) shortens cold reads; per-turn latency also depends on the dense attention and pooling costs in the table above.
+Agent sessions reuse a cached prefix, so the prompt turns that matter add a few dozen to a few hundred tokens at 130K+ context and take about 1-3.5 s. Cold reads of a 135K prompt take 405-472 s (on the 2026-09-25 builds; 283-286 s on 2026-09-26, see [cold read by build](../benchmarks/2026-09-26-cold-read-135k-by-build.md)). A fix that only helps large batches (grouped GEMM) shortens cold reads; per-turn latency also depends on the dense attention and pooling costs in the table above.
 
 ## Measurement plan for any fix
 
@@ -103,5 +103,5 @@ Agent sessions reuse a cached prefix, so the prompt turns that matter add a few 
 - [x] `-ub 1536` (kept)
 - [x] Per-token fused MUL_MAT_ID up to 512 tokens (reverted)
 - [ ] Device-side expert routing in `ggml_sycl_mul_mat_id` for n > 8
-- [ ] Grouped MoE GEMM for Q4_K / Q5_K / Q5_1 experts, building on #29245
+- [x] Grouped MoE GEMM for Q4_K / Q5_K / Q5_1 experts, building on #29245 (built on 2026-09-26 as patches 0012-0015: [experiment](../experiments/2026-09-26-grouped-moe-xmx-gemm.md))
 - [ ] Cache oneDNN primitives per expert shape (cheap host trim)

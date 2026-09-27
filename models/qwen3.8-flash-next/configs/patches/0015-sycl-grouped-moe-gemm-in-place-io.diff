@@ -1,0 +1,274 @@
+diff --git a/ggml/src/ggml-sycl/fused-gemm.cpp b/ggml/src/ggml-sycl/fused-gemm.cpp
+index c95ce44e4..23391615a 100644
+--- a/ggml/src/ggml-sycl/fused-gemm.cpp
++++ b/ggml/src/ggml-sycl/fused-gemm.cpp
+@@ -432,6 +432,7 @@ static void fused_dequant_gemm_tile(
+     float * __restrict__ dst,
+     const int M, const int Npad, const int K, const int ldd,
+     const int b0, const int n0, const int n1,
++    const mmid_row_mapping * __restrict__ rmap, const size_t nb1, const size_t nb2,
+     sycl::local_accessor<sycl::half, 1> tile_a,
+     sycl::local_accessor<float, 1> tile_c,
+     const sycl::nd_item<2> & item) {
+@@ -521,7 +522,12 @@ static void fused_dequant_gemm_tile(
+             for (int s = 0; s < FG_KSPLIT; ++s) {
+                 sum += tile_c[s * FG_SG_ROWS * FG_BN + r * FG_BN + c];
+             }
+-            dst[(size_t) n * ldd + m] = sum;
++            if (rmap) {
++                const mmid_row_mapping rm = rmap[n];
++                ((float *) ((char *) dst + (size_t) rm.i1 * nb1 + (size_t) rm.i2 * nb2))[m] = sum;
++            } else {
++                dst[(size_t) n * ldd + m] = sum;
++            }
+         }
+     }
+ }
+@@ -537,9 +543,17 @@ static void fused_dequant_gemm(
+     sycl::local_accessor<float, 1> tile_c,
+     const sycl::nd_item<2> & item) {
+     const int n0 = item.get_group(0) * FG_BN;
+-    fused_dequant_gemm_tile<block_q_t>(x, packed_b, dst, M, Npad, K, ldd, n0, n0, N, tile_a, tile_c, item);
++    fused_dequant_gemm_tile<block_q_t>(x, packed_b, dst, M, Npad, K, ldd, n0, n0, N, nullptr, 0, 0, tile_a, tile_c, item);
+ }
+ 
++// where the grouped GEMM writes routed row r: dst + rmap[r].i1*nb1 + rmap[r].i2*nb2
++struct fg_dst_rows {
++    char *                   base;
++    const mmid_row_mapping * rmap;
++    size_t                   nb1;
++    size_t                   nb2;
++};
++
+ // grouped: work-group (t, mt) is tile t of the schedule; its B columns sit at t * FG_BN
+ template <typename block_q_t>
+ [[sycl::reqd_sub_group_size(WARP_SIZE)]]
+@@ -548,7 +562,7 @@ static void grouped_dequant_gemm(
+     const size_t expert_stride,
+     const ggml_sycl_gg_tile * __restrict__ tiles,
+     const sycl::half * __restrict__ packed_b,
+-    float * __restrict__ dst,
++    const fg_dst_rows dst,
+     const int M, const int Npad, const int K,
+     sycl::local_accessor<sycl::half, 1> tile_a,
+     sycl::local_accessor<float, 1> tile_c,
+@@ -556,7 +570,8 @@ static void grouped_dequant_gemm(
+     const int t = item.get_group(0);
+     const ggml_sycl_gg_tile tile = tiles[t];
+     const block_q_t * x = (const block_q_t *) (src0_base + (size_t) tile.expert * expert_stride);
+-    fused_dequant_gemm_tile<block_q_t>(x, packed_b, dst, M, Npad, K, M, t * FG_BN, tile.n0, tile.n1, tile_a, tile_c, item);
++    fused_dequant_gemm_tile<block_q_t>(x, packed_b, (float *) dst.base, M, Npad, K, M, t * FG_BN, tile.n0, tile.n1,
++                                       dst.rmap, dst.nb1, dst.nb2, tile_a, tile_c, item);
+ }
+ 
+ template <typename block_q_t>
+@@ -577,7 +592,7 @@ static void fused_dequant_gemm_launch(const void * src0, const sycl::half * pack
+ 
+ template <typename block_q_t>
+ static void grouped_dequant_gemm_launch(const char * src0_dd, const size_t expert_stride,
+-                                        const ggml_sycl_gg_tile * tiles_ptr, const sycl::half * packed, float * dst,
++                                        const ggml_sycl_gg_tile * tiles_ptr, const sycl::half * packed, const fg_dst_rows dst,
+                                         const int M, const int Npad, const int K, const int64_t n_tiles,
+                                         const int64_t groups_m, dpct::queue_ptr stream) {
+     stream->submit([&](sycl::handler & cgh) {
+@@ -592,27 +607,55 @@ static void grouped_dequant_gemm_launch(const char * src0_dd, const size_t exper
+     });
+ }
+ 
+-// src1 f32 rows -> VNNI packed [K/2][n_tiles*FG_BN][2], tile t holds its rows [n0, n1) at columns
+-// t*FG_BN.., zero past n1. The column runs fastest so a sub-group writes one contiguous run.
+-static void grouped_gemm_pack_b(const float * y, sycl::half * packed, const ggml_sycl_gg_tile * tiles, int Npad, int K,
+-                                dpct::queue_ptr stream) {
+-    const int kpairs = K / 2;
+-    stream->parallel_for(sycl::range<1>((size_t) Npad * kpairs), [=](sycl::id<1> id) {
+-        const size_t idx = id[0];
+-        const int    kp  = idx / Npad;
+-        const int    n   = idx - (size_t) kp * Npad;
+-        const ggml_sycl_gg_tile tile = tiles[n / FG_BN];
+-        const int    row = tile.n0 + n % FG_BN;
+-        sycl::half v0 = (sycl::half) 0.0f;
+-        sycl::half v1 = (sycl::half) 0.0f;
+-        if (row < tile.n1) {
+-            const float * src = y + (size_t) row * K + 2 * kp;
+-            v0 = (sycl::half) src[0];
+-            v1 = (sycl::half) src[1];
+-        }
+-        sycl::half * out = packed + ((size_t) kp * Npad + n) * 2;
+-        out[0] = v0;
+-        out[1] = v1;
++// routed src1 rows -> VNNI packed [K/2][n_tiles*FG_BN][2], tile t holds its rows [n0, n1) at
++// columns t*FG_BN.., zero past n1. Routed row r is read in place: slot rmap[r].i1 % ne11 of token
++// rmap[r].i2. A work-group moves an FG_BN x FG_PACK_K block through local memory, so the row reads
++// (64 lanes on one row) and the packed writes (8 lanes on one k pair) are both contiguous.
++static constexpr int FG_PACK_K  = 64;
++static constexpr int FG_PACK_WG = 256;
++static_assert(FG_PACK_WG == (FG_PACK_K / 2) * (FG_BN / 4), "one k pair per FG_BN/4 lanes, 4 columns each");
++static_assert(FG_PACK_WG % FG_PACK_K == 0, "whole rows per read pass");
++
++static void grouped_gemm_pack_b(const char * src1, const int64_t ne11, const size_t nb11, const size_t nb12,
++                                const mmid_row_mapping * rmap, sycl::half * packed, const ggml_sycl_gg_tile * tiles,
++                                const int64_t n_tiles, const int Npad, const int K, dpct::queue_ptr stream) {
++    const int n_kc = (K + FG_PACK_K - 1) / FG_PACK_K;
++    stream->submit([&](sycl::handler & cgh) {
++        constexpr int LD = FG_PACK_K + 2;
++        sycl::local_accessor<sycl::half, 1> sm(FG_BN * LD, cgh);
++        cgh.parallel_for(
++            sycl::nd_range<1>((size_t) n_tiles * n_kc * FG_PACK_WG, FG_PACK_WG), [=](sycl::nd_item<1> item) {
++                const int               g    = item.get_group(0);
++                const int               t    = g / n_kc;
++                const int               k0   = (g % n_kc) * FG_PACK_K;
++                const int               w    = item.get_local_id(0);
++                const ggml_sycl_gg_tile tile = tiles[t];
++
++                const int kk = w % FG_PACK_K;
++                for (int c = w / FG_PACK_K; c < FG_BN; c += FG_PACK_WG / FG_PACK_K) {
++                    const int row = tile.n0 + c;
++                    float     v   = 0.0f;
++                    if (row < tile.n1 && k0 + kk < K) {
++                        const mmid_row_mapping rm = rmap[row];
++                        v = ((const float *) (src1 + (size_t) (rm.i1 % ne11) * nb11 + (size_t) rm.i2 * nb12))[k0 + kk];
++                    }
++                    sm[c * LD + kk] = (sycl::half) v;
++                }
++                sycl::group_barrier(item.get_group());
++
++                const int kp = w / (FG_BN / 4);
++                const int c0 = (w % (FG_BN / 4)) * 4;
++                const int kg = k0 + 2 * kp;
++                if (kg < K) {
++                    sycl::vec<sycl::half, 8> v;
++#pragma unroll
++                    for (int j = 0; j < 4; ++j) {
++                        v[2 * j]     = sm[(c0 + j) * LD + 2 * kp];
++                        v[2 * j + 1] = sm[(c0 + j) * LD + 2 * kp + 1];
++                    }
++                    *(sycl::vec<sycl::half, 8> *) (packed + ((size_t) (kg / 2) * Npad + (size_t) t * FG_BN + c0) * 2) = v;
++                }
++            });
+     });
+ }
+ 
+@@ -697,7 +740,9 @@ bool ggml_sycl_fused_dequant_gemm_f16(ggml_type src0_type, const void * src0, co
+ }
+ 
+ bool ggml_sycl_grouped_dequant_gemm_f16(ggml_type src0_type, const void * src0_base, size_t expert_stride,
+-                                        bool reordered, const float * src1, float * dst, const int64_t * expert_row_offsets,
++                                        bool reordered, const char * src1, int64_t ne11, size_t nb11, size_t nb12,
++                                        char * dst_base, size_t nb1, size_t nb2, const mmid_row_mapping * row_mapping,
++                                        const int64_t * expert_row_offsets,
+                                         int64_t n_as, int64_t M, int64_t K, int64_t total_rows,
+                                         std::vector<ggml_sycl_gg_tile> & tiles, ggml_sycl_pool & pool,
+                                         dpct::queue_ptr stream) {
+@@ -734,7 +779,9 @@ bool ggml_sycl_grouped_dequant_gemm_f16(ggml_type src0_type, const void * src0_b
+     SYCL_CHECK(CHECK_TRY_ERROR(stream->memcpy(tiles_dev.get(), tiles.data(), n_tiles * sizeof(ggml_sycl_gg_tile))));
+ 
+     ggml_sycl_pool_alloc<sycl::half> packed_b(pool, grouped_gemm_packed_capacity((size_t) K * Npad));
+-    grouped_gemm_pack_b(src1, packed_b.get(), tiles_dev.get(), Npad, (int) K, stream);
++    grouped_gemm_pack_b(src1, ne11, nb11, nb12, row_mapping, packed_b.get(), tiles_dev.get(), n_tiles, Npad, (int) K,
++                        stream);
++    const fg_dst_rows dst = { dst_base, row_mapping, nb1, nb2 };
+ 
+     const sycl::half *       packed    = packed_b.get();
+     const ggml_sycl_gg_tile * tiles_ptr = tiles_dev.get();
+diff --git a/ggml/src/ggml-sycl/fused-gemm.hpp b/ggml/src/ggml-sycl/fused-gemm.hpp
+index e9179515a..666617910 100644
+--- a/ggml/src/ggml-sycl/fused-gemm.hpp
++++ b/ggml/src/ggml-sycl/fused-gemm.hpp
+@@ -82,14 +82,19 @@ bool ggml_sycl_fused_dequant_gemm_f16(ggml_type src0_type, const void * src0, co
+                                       int64_t M, int64_t N, int64_t K, int64_t ldd, ggml_sycl_pool & pool,
+                                       dpct::queue_ptr stream);
+ 
+-// One launch for every expert of a MUL_MAT_ID: rows of src1/dst are grouped by expert, expert e
+-// owns rows [expert_row_offsets[e], expert_row_offsets[e+1]) and reads its weights at
+-// src0_base + e*expert_stride. tiles is host scratch that must stay alive until the queue drains.
++// One launch for every expert of a MUL_MAT_ID. Routed rows are grouped by expert: expert e owns
++// rows [expert_row_offsets[e], expert_row_offsets[e+1]) and reads its weights at
++// src0_base + e*expert_stride. Routed row r is slot row_mapping[r].i1 of token row_mapping[r].i2:
++// it reads src1 at (i1 % ne11)*nb11 + i2*nb12 and writes dst at i1*nb1 + i2*nb2, in place (the rows
++// k_copy_src1_to_contiguous and k_copy_dst_from_contiguous would move). Rows must be contiguous
++// f32. tiles is host scratch that must stay alive until the queue drains.
+ // reordered: Q4_K/Q5_K weights sit in the per-expert SoA layout of reorder_qw_q*_k_moe.
+-// dst[n*M + m] = sum_k dequant(src0_e)[m*K + k] * src1[n*K + k]
++// dst_row[m] = sum_k dequant(src0_e)[m*K + k] * src1_row[k]
+ // Returns false when the case is not handled (type, device, or shape).
+ bool ggml_sycl_grouped_dequant_gemm_f16(ggml_type src0_type, const void * src0_base, size_t expert_stride,
+-                                        bool reordered, const float * src1, float * dst, const int64_t * expert_row_offsets,
++                                        bool reordered, const char * src1, int64_t ne11, size_t nb11, size_t nb12,
++                                        char * dst, size_t nb1, size_t nb2, const mmid_row_mapping * row_mapping,
++                                        const int64_t * expert_row_offsets,
+                                         int64_t n_as, int64_t M, int64_t K, int64_t total_rows,
+                                         std::vector<ggml_sycl_gg_tile> & tiles, ggml_sycl_pool & pool,
+                                         dpct::queue_ptr stream);
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index cf1c3bc22..b5a032412 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -5329,11 +5329,6 @@ static void ggml_sycl_mul_mat_id(ggml_backend_sycl_context & ctx,
+         }
+     } else {
+         const int64_t n_routed_rows = ids->ne[1] * n_ids;
+-        ggml_sycl_pool_alloc<char> src1_contiguous(ctx.pool(), sizeof(float)*n_routed_rows*ne10);
+-        ggml_sycl_pool_alloc<char>  dst_contiguous(ctx.pool(), sizeof(float)*n_routed_rows*ne0);
+-
+-        src1_row.data = src1_contiguous.get();
+-        dst_row.data  =  dst_contiguous.get();
+ 
+         // how many "owned" routed rows to pass to each expert
+         std::vector<int64_t> expert_row_counts;
+@@ -5349,6 +5344,32 @@ static void ggml_sycl_mul_mat_id(ggml_backend_sycl_context & ctx,
+         SYCL_CHECK(CHECK_TRY_ERROR(
+                 stream->memcpy(dev_row_mapping.get(), routed_row_src.data(), n_routed_rows*sizeof(mmid_row_mapping))));
+ 
++        // one launch for every expert, reading src1 rows and writing dst rows in place
++        bool grouped = false;
++        if (ggml_is_contiguous(src0) && src1->type == GGML_TYPE_F32 &&
++            dst->type == GGML_TYPE_F32 && dst->op_params[0] == GGML_PREC_DEFAULT &&
++            nb10 == sizeof(float) && nb0 == sizeof(float)) {
++            // the decode path reorders Q4_K/Q5_K experts on first use; doing it here too means the
++            // grouped kernel only ever meets that layout once a prompt has run
++            opt_for_reorder_id(&ctx, src0);
++            const ggml_tensor_extra_gpu * src0_extra = static_cast<const ggml_tensor_extra_gpu *>(src0->extra);
++            const bool src0_reordered = src0_extra && src0_extra->optimized_feature.reorder;
++            grouped = ggml_sycl_grouped_dequant_gemm_f16(src0->type, src0_original, nb02, src0_reordered,
++                                                         src1_original, ne11, nb11, nb12, dst_original, nb1, nb2,
++                                                         dev_row_mapping.get(), expert_row_offsets.data(),
++                                                         n_as, ne01, ne10, n_routed_rows,
++                                                         ctx.mmid_tile_schedule_host, ctx.pool(), stream);
++        }
++        if (grouped) {
++            return;
++        }
++
++        ggml_sycl_pool_alloc<char> src1_contiguous(ctx.pool(), sizeof(float)*n_routed_rows*ne10);
++        ggml_sycl_pool_alloc<char>  dst_contiguous(ctx.pool(), sizeof(float)*n_routed_rows*ne0);
++
++        src1_row.data = src1_contiguous.get();
++        dst_row.data  =  dst_contiguous.get();
++
+         const unsigned int max_work_group_size = ggml_sycl_info().max_work_group_sizes[ctx.device];
+         assert(max_work_group_size % (WARP_SIZE * WARP_SIZE) == 0);
+ 
+@@ -5373,22 +5394,7 @@ static void ggml_sycl_mul_mat_id(ggml_backend_sycl_context & ctx,
+             });
+         }
+ 
+-        bool grouped = false;
+-        if (ggml_is_contiguous(src0) && src1->type == GGML_TYPE_F32 &&
+-            dst->type == GGML_TYPE_F32 && dst->op_params[0] == GGML_PREC_DEFAULT &&
+-            nb11 == sizeof(float)*ne10 && nb1 == sizeof(float)*ne0) {
+-            // the decode path reorders Q4_K/Q5_K experts on first use; doing it here too means the
+-            // grouped kernel only ever meets that layout once a prompt has run
+-            opt_for_reorder_id(&ctx, src0);
+-            const ggml_tensor_extra_gpu * src0_extra = static_cast<const ggml_tensor_extra_gpu *>(src0->extra);
+-            const bool src0_reordered = src0_extra && src0_extra->optimized_feature.reorder;
+-            grouped = ggml_sycl_grouped_dequant_gemm_f16(src0->type, src0_original, nb02, src0_reordered,
+-                                                         (const float *) src1_contiguous.get(), (float *) dst_contiguous.get(),
+-                                                         expert_row_offsets.data(), n_as, ne01, ne10, n_routed_rows,
+-                                                         ctx.mmid_tile_schedule_host, ctx.pool(), stream);
+-        }
+-
+-        for (int64_t i02 = 0; i02 < n_as && !grouped; i02++) {
++        for (int64_t i02 = 0; i02 < n_as; i02++) {
+             const int64_t num_src1_rows = expert_row_counts[i02];
+ 
+             if (num_src1_rows == 0) {

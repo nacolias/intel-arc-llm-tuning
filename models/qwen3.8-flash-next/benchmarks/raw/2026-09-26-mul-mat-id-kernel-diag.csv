@@ -1,0 +1,16 @@
+# test-backend-ops perf, MUL_MAT_ID n_mats=512 n_used=10 n=1536 (one -ub 1536 prompt ubatch), one B70 (SYCL0), 2026-09-26.
+# Temporary GGML_SYCL_FG_DIAG bit switches skipped parts of the grouped kernel to attribute time; results are wrong in these runs, only the time matters.
+# Series 1 on build 517eb833d (vector loads; contiguous-buffer copies still in): bit 1 = skip GEMM launch, bit 2 = skip B pack.
+# Series 2 on build 85b26781b (in-place I/O): bit 4 = skip A-stage dequant, bit 8 = skip XMX mad, bit 16 = skip B tile loads, bit 32 = skip GEMM launch, bit 64 = skip B pack.
+series,build,diag_bits,what_is_skipped,q4_K_gate_us,q5_K_gate_us,q5_1_down_us,q8_0_down_us
+1,517eb833d,0,nothing (full kernel),4872.93,5329.85,4452.86,7973.57
+1,517eb833d,1,GEMM launch (pack + id sort + contiguous copies remain),2061.84,2034.91,1450.17,1449.52
+1,517eb833d,3,GEMM launch and B pack (id sort + contiguous copies remain),1265.98,1254.40,1278.44,1278.97
+2,85b26781b,0,nothing (full kernel),4045.93,4542.23,3869.07,7436.62
+2,85b26781b,4,A-stage dequantization,2733.94,2735.23,2622.31,2761.55
+2,85b26781b,8,XMX joint_matrix_mad,3677.70,4251.16,3554.83,7233.56
+2,85b26781b,12,A-stage and mad,2376.45,2459.70,2338.58,2591.39
+2,85b26781b,28,A-stage and mad and B tile loads,2055.94,2087.85,2190.39,2379.29
+2,85b26781b,32,GEMM launch (pack + id sort remain),1093.28,1100.38,632.82,632.00
+2,85b26781b,96,GEMM launch and B pack (id sort + host sync remain),526.64,541.51,542.24,557.25
+2,85b26781b,XMX_GATHER_TYPES=0,grouped path off: per-expert oneDNN loop,11453.18,11896.22,10811.17,10709.78

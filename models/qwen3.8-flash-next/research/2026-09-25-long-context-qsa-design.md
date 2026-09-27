@@ -10,7 +10,7 @@
 
 ## Summary
 
-At 135K context, decode is GPU-bound in attention and in the QSA (Qwen sparse attention) indexer, not in the host. llama.cpp's upstream sparse flash attention covers single-token passes only, and with MTP (multi-token prediction) every target pass verifies 4 tokens, so it never engaged. We built two of four designed changes: sparse flash attention for multi-token batches, and a pooled indexer-key cache. Together they took the 135K agent-session decode median from 22-23 tok/s to 39-49 tok/s (the spread follows MTP acceptance), and 219K decode from 18.4 to 40.6 tok/s. Block-level top-k and a sparse MTP draft layer are designed but not built.
+At 135K context, decode is GPU-bound in attention and in the QSA (Qwen sparse attention) indexer, not in the host. llama.cpp's upstream sparse flash attention covers single-token passes only, and with MTP (multi-token prediction) every target pass verifies 4 tokens, so it never engaged. We built two of four designed changes: sparse flash attention for multi-token batches, and a pooled indexer-key cache. Together they took the 135K agent-session decode median from 22-23 tok/s to 39-49 tok/s (the spread follows MTP acceptance), and 219K decode from 18.4 to 40.6 tok/s. Block-level top-k and a sparse MTP draft layer are designed but not built (as of this note; the draft QSA was built on 2026-09-25: see [MTP draft QSA](../experiments/2026-09-25-mtp-draft-qsa.md)).
 
 ## Reference QSA semantics
 
@@ -36,11 +36,11 @@ cells = {4b .. 4b+3 : b in B}  U  [4*n_c, L]              # tail of at most 3 ce
 | Recomputes every pooled block for every micro-batch | about 7.4 ms/step of CONT slices plus about 5.6 ms of GET_ROWS at 135K (profile below) | yes: pooled key cache (patch 0007) |
 | Takes top-k over expanded cells with width 2051 instead of over blocks | when `(q+1) % 4 != 3` and more than 512 blocks are visible, it attends up to 3 cells of a 513th block; at 135K that is 3 of every 4 positions (code reading plus simulation). Effect on logits not measured | no |
 | Radix top-k resolves ties at the cut in an unspecified order when tied cells span work-groups (`topk-radix.cpp`) | two runs of the same build can select different cells; every correctness gate needs a same-build noise floor | no |
-| MTP draft layer (blk.48) runs dense attention over its own 262,144-cell KV; the draft GGUF has `compress_ratios[48] = 0` but ships `blk.48.indexer.*` weights | about 7.1 ms/step at 135K | no (design below) |
+| MTP draft layer (blk.48) runs dense attention over its own 262,144-cell KV; the draft GGUF has `compress_ratios[48] = 0` but ships `blk.48.indexer.*` weights | about 7.1 ms/step at 135K | no (design below; built on 2026-09-25 as patch 0009: see [MTP draft QSA](../experiments/2026-09-25-mtp-draft-qsa.md)) |
 
 ## Cost model versus measurement
 
-**Unit of cost:** one MTP verify step. Every step verifies T = 4 tokens and yields about 2.9-3.2 tokens. At 135K a step took 124-137 ms (median about 135 ms). A fit over 4K-106K has an intercept of about 54 ms, so about 75-81 ms per step is context-dependent. The one measured point at 219K took 153.8 ms per step.
+**Unit of cost:** one MTP verify step. Every step verifies T = 4 tokens and yields about 2.9-3.2 tokens. At 135K a step took 124-137 ms (median about 135 ms). A fit over 4K-106K has an intercept of about 54 ms, so about 75-81 ms per step is context-dependent. The one measured point at 219K took 153.8 ms per step (from session notes; raw fit not archived).
 
 **Host-synced op profile at 134.8K, dense attention** (the profiler adds about 15 ms/step):
 
@@ -70,10 +70,10 @@ Profiling barely slowed decode (20.1 vs 22.3 tok/s), so decode at 135K is GPU-bo
 
 | # | Change | Predicted saving per step at 135K (estimate) | Output vs current | Measured | Status |
 |---|---|---|---|---|---|
-| 1 | Pooled indexer-key cache | 17-26 ms | bitwise identical selection (expected) | about 72-73 ms/step on vs about 94 ms off: about 21 ms | **built, kept** (patch 0007) |
+| 1 | Pooled indexer-key cache | 17-26 ms | bitwise identical selection (expected) | about 72-73 ms/step on vs about 95-96 ms off: about 22-23 ms (95.8 ms as the median of turns in the [agent-session benchmark](../benchmarks/2026-09-25-agent-session-135k.md), 95.1 ms over the whole run in the [raw summary](../benchmarks/raw/2026-09-26-lcbench-sessions-summary.csv), run `lc-pooloff`) | **built, kept** (patch 0007) |
 | 2 | Sparse flash attention for multi-token batches | 18-20 ms | numerically equivalent | decode median 22.2 to 34.5 tok/s | **built, kept** (patch 0006) |
 | 3 | Top-k over blocks instead of cells | 1-3 ms | differs only at the 513th block and on ties, where it matches the reference | – | designed, not built |
-| 4 | QSA for the MTP draft layer | 5-6 ms (about 12 at 262K) | greedy target output unchanged; acceptance may move | – | designed, not built |
+| 4 | QSA for the MTP draft layer | 5-6 ms (about 12 at 262K) | greedy target output unchanged; acceptance may move | – | designed, not built as of this note (built on 2026-09-25: see [MTP draft QSA](../experiments/2026-09-25-mtp-draft-qsa.md)) |
 
 ### 1. Pooled indexer-key cache
 
@@ -92,7 +92,7 @@ Measured A/B at 135K with sparse attention on in all runs ([experiment](../exper
 | B: pooled off | 29.9 / 31.7 / 29.4 / 29.8 / 27.9 / 30.0 | 29.9 | about 60% |
 | C: pooled on again | 38.5 / 38.5 / 36.8 / 43.8 / 39.1 / 40.7 | 39.1 | about 60% |
 
-Run A had luckier acceptance. The fair comparison is C against B at the same acceptance: +31%. Per-step time (72-73 vs 94 ms) does not depend on acceptance. VRAM rose by 96 MiB per GPU.
+Run A had luckier acceptance. The fair comparison is C against B at the same acceptance: +31%. Per-step time (72-73 vs 95-96 ms) does not depend on acceptance. VRAM rose by 96 MiB per GPU.
 
 ### 2. Sparse flash attention for multi-token batches
 
@@ -124,9 +124,9 @@ Model A/B at 135K in one server session ([experiment](../experiments/2026-09-25-
 
 Score whole blocks with a 0 / −inf bias (tail, dead, future and incomplete blocks get −inf), take `top_k(min(512, n_blocks))`, build a block mask with the picks plus the row's tail block, then expand to cells with `get_rows`. It matches the reference exactly at the 513th block and makes selection deterministic. Saving about 1-3 ms (estimate); the main value is conformance.
 
-### 4. QSA for the MTP draft layer (not built)
+### 4. QSA for the MTP draft layer (not built as of this note; built on 2026-09-25: see [MTP draft QSA](../experiments/2026-09-25-mtp-draft-qsa.md))
 
-The reference MTP layer is a full QSA layer with its own indexer, raw-key cache, pooled-key cache and top-k, with the same r = 4 and 2048-token budget. llama.cpp runs it dense. The design makes the draft memory a hybrid indexer cache in an attention-only mode and reuses the trunk's QSA graph builder, gated to batches of 8 tokens or fewer. About 300-350 lines; 64 MiB of indexer cache plus a 32 MiB pool on the draft card. Gate on MTP acceptance only, because greedy target output cannot change.
+The reference MTP layer is a full QSA layer with its own indexer, raw-key cache, pooled-key cache and top-k, with the same r = 4 and 2048-token budget. llama.cpp runs it dense (until patch 0009, built on 2026-09-25). The design makes the draft memory a hybrid indexer cache in an attention-only mode and reuses the trunk's QSA graph builder, gated to batches of 8 tokens or fewer. About 300-350 lines; 64 MiB of indexer cache plus a 32 MiB pool on the draft card. Gate on MTP acceptance only, because greedy target output cannot change.
 
 ## Correctness
 
@@ -154,7 +154,7 @@ Both changes sit inside the same-build noise floor.
 
 | Claim | Reported number | Their setup | Status |
 |---|---|---|---|
-| Pooled cache saves 17-26 ms/step at 135K | – | our estimate | verified-here: about 21 ms/step |
+| Pooled cache saves 17-26 ms/step at 135K | – | our estimate | verified-here: about 22-23 ms/step |
 | Multi-token sparse FA saves 18-20 ms/step at 135K | – | our estimate | verified-here: decode 22.2 to 34.5 tok/s |
 | An exact sparse gather on CUDA with MTP on cut verify time only 6.8% | 6.8% | comment on [#28213](https://github.com/ggml-org/llama.cpp/pull/28213) | UNVERIFIED (measured on CUDA, not on a B70) |
 | Block-level top-k saves 1-3 ms/step | – | our estimate | UNVERIFIED |
@@ -162,7 +162,7 @@ Both changes sit inside the same-build noise floor.
 
 ## Relevance
 
-- The decode-step time jumps by 20-28 ms between about 106K and 112K and reproduces on a fresh server. The cause is unknown; VRAM residency is one candidate (UNVERIFIED).
+- The decode-step time jumps by 20-28 ms between about 106K and 112K and reproduces on a fresh server (from session notes; raw fit not archived). The cause is unknown; VRAM residency is one candidate (UNVERIFIED).
 - MTP draft attention is now the largest attention term (9.4% of decode at 135K).
 - ~60-token prompt turns exceed the 32-row sparse limit and still run dense attention; see the [prefill note](2026-09-25-prefill-bottleneck.md).
 
@@ -172,5 +172,5 @@ Both changes sit inside the same-build noise floor.
 - [x] Sparse flash attention for multi-token batches (patch 0006)
 - [x] Pooled indexer-key cache (patch 0007)
 - [ ] Block-level top-k (reference conformance at the 513th block, deterministic ties)
-- [ ] QSA for the MTP draft layer
+- [x] QSA for the MTP draft layer (built on 2026-09-25 as patch 0009: see [MTP draft QSA](../experiments/2026-09-25-mtp-draft-qsa.md))
 - [ ] Explain the step-time jump near 106K

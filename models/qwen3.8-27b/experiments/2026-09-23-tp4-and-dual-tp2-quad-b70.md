@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Date** | 2026-09-23 |
+| **Date** | 2026-09-23 (local evening; 2026-09-24 04:00-05:00 UTC) |
 | **Model / checkpoint** | DavidAU Qwen3.8-27B TURBO Fable Cold Fusion 735-882 Heretic merge, GPTQ INT4 group 128, BF16 MTP head (details in the [benchmark](../benchmarks/2026-09-23-tp4-quad-b70.md)) |
 | **Host** | [quad-b70-5800x-pex88096](../../../hardware/hosts/quad-b70-5800x-pex88096.md) |
 | **Status** | inconclusive (TP4 speed measured, correctness not checked, not deployed); PP2 x TP2 blocked |

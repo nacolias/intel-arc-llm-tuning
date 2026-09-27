@@ -10,6 +10,11 @@
 #   MMPROJ        vision projector GGUF, or empty to serve text only                     [/path/to/models/.../mmproj-model-bf16.gguf]
 #   API_KEY_FILE  file that holds the API key (mode 0600); required. Never pass the key itself on the command line.
 #   HOST, PORT    bind address and port                                                  [127.0.0.1, 8080]
+#   SLOT_DIR      directory for saving the prompt-cache slot across restarts (0700; see
+#                 llama-server-slot-cache.sh); empty disables --slot-save-path              [empty]
+#   CACHE_RAM     host-RAM prompt cache in MiB for displaced conversations (--cache-ram);
+#                 empty keeps llama-server's default                                      [empty]
+#   SIGNATURE     file to write the setup signature to, for llama-server-slot-cache.sh; empty skips it [empty]
 #   ONEAPI_VARS   oneAPI environment script                                              [/opt/intel/oneapi/2026.1/oneapi-vars.sh]
 #   CTX, UB, BATCH, TS, EXTRA_ARGS: see below.
 #
@@ -27,6 +32,9 @@ HOST=${HOST:-127.0.0.1}
 PORT=${PORT:-8080}
 : "${API_KEY_FILE:?set API_KEY_FILE to a 0600 file that holds the API key}"
 ONEAPI_VARS=${ONEAPI_VARS:-/opt/intel/oneapi/2026.1/oneapi-vars.sh}
+SLOT_DIR=${SLOT_DIR:-}
+CACHE_RAM=${CACHE_RAM:-}
+SIGNATURE=${SIGNATURE:-}
 
 CTX=${CTX:-262144}
 # -ub 1536 against 1024 (measured, MTP on): prompt +4.5% at 39k and +6% at 219k, 28.2 against 27.8 GiB on the
@@ -52,6 +60,23 @@ VISION=()
 # Extra llama-server flags, split on whitespace.
 read -r -a EXTRA <<<"${EXTRA_ARGS:-}"
 
+# Prompt cache across restarts (see configs/README.md, "Prompt cache across restarts"): the unit's ExecStop saves
+# slot 0 to SLOT_DIR and ExecStartPost restores it, but only into an identical setup. The signature written here
+# is what llama-server-slot-cache.sh compares. --cache-ram keeps a displaced conversation in host RAM instead of
+# re-reading it when a second client takes the single slot (about 4 GB of state for a 135K conversation with the draft;
+# see configs/README.md, "Prompt cache across restarts").
+SLOTS=()
+if [ -n "$SLOT_DIR" ]; then
+  mkdir -p "$SLOT_DIR" && chmod 700 "$SLOT_DIR"
+  SLOTS+=(--slot-save-path "$SLOT_DIR")
+fi
+[ -n "$CACHE_RAM" ] && SLOTS+=(--cache-ram "$CACHE_RAM")
+if [ -n "$SIGNATURE" ]; then
+  # kv= is what this script passes; EXTRA_ARGS can override it (a later -ctk/-ctv wins), so it is part of the signature too
+  printf '%s\n' "model=$MODEL" "mtp=$MTP" "bin=$BIN" "ctx=$CTX" "kv=f16/f16" "np=1" \
+      "mtp_qsa=${LLAMA_MTP_QSA-}" "mtp_window=${LLAMA_MTP_WINDOW-}" "extra=${EXTRA_ARGS:-}" > "$SIGNATURE"
+fi
+
 set +eu
 # shellcheck disable=SC1090
 source "$ONEAPI_VARS" >/dev/null 2>&1
@@ -76,4 +101,4 @@ exec "$BIN/llama-server" \
   --temp 1.0 --top-p 0.95 --top-k 20 \
   --host "$HOST" --port "$PORT" \
   --api-key-file "$API_KEY_FILE" --no-webui \
-  "${SPEC[@]}" "${VISION[@]}" "${EXTRA[@]}"
+  "${SLOTS[@]}" "${SPEC[@]}" "${VISION[@]}" "${EXTRA[@]}"

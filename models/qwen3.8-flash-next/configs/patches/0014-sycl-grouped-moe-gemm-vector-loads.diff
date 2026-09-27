@@ -1,0 +1,106 @@
+diff --git a/ggml/src/ggml-sycl/fused-gemm.cpp b/ggml/src/ggml-sycl/fused-gemm.cpp
+index d85b1c153..c95ce44e4 100644
+--- a/ggml/src/ggml-sycl/fused-gemm.cpp
++++ b/ggml/src/ggml-sycl/fused-gemm.cpp
+@@ -295,19 +295,31 @@ static __dpct_inline__ void fg_stage_kq(const uint8_t * __restrict__ qs, const u
+                                         sycl::half2 * a) {
+     int sc, m;
+     fg_scale_min_k4(ib, scales, sc, m);
+-    const float     d     = (float) dm[0] * sc;
+-    const float     mn    = (float) dm[1] * m;
+-    const uint8_t * q     = qs + 32 * (ib / 2);
+-    const int       shift = 4 * (ib % 2);
++    const float d  = (float) dm[0] * sc;
++    const float mn = (float) dm[1] * m;
++
++    // the step's 32 qs bytes (and the 32 qh bytes) are 16-byte aligned in the block and SoA layouts
++    const sycl::uint4 * q4 = (const sycl::uint4 *) (qs + 32 * (ib / 2));
++    const sycl::uint4   q_lo = q4[0];
++    const sycl::uint4   q_hi = q4[1];
++    sycl::uint4         h_lo(0u);
++    sycl::uint4         h_hi(0u);
++    if constexpr (has_qh) {
++        h_lo = ((const sycl::uint4 *) qh)[0];
++        h_hi = ((const sycl::uint4 *) qh)[1];
++    }
++    const int shift = 4 * (ib % 2);
+ #pragma unroll
+-    for (int j = 0; j < 16; ++j) {
+-        int v0 = (q[2 * j]     >> shift) & 0xf;
+-        int v1 = (q[2 * j + 1] >> shift) & 0xf;
++    for (int w = 0; w < 8; ++w) {
++        // four values, one per byte
++        uint32_t v = ((w < 4 ? q_lo[w] : q_hi[w - 4]) >> shift) & 0x0f0f0f0f;
+         if constexpr (has_qh) {
+-            v0 |= ((qh[2 * j]     >> ib) & 1) << 4;
+-            v1 |= ((qh[2 * j + 1] >> ib) & 1) << 4;
++            v |= (((w < 4 ? h_lo[w] : h_hi[w - 4]) >> ib) & 0x01010101) << 4;
+         }
+-        a[j] = sycl::half2((sycl::half) (d * v0 - mn), (sycl::half) (d * v1 - mn));
++        a[2 * w]     = sycl::half2((sycl::half) (d * (float) (v & 0xff) - mn),
++                                   (sycl::half) (d * (float) ((v >> 8) & 0xff) - mn));
++        a[2 * w + 1] = sycl::half2((sycl::half) (d * (float) ((v >> 16) & 0xff) - mn),
++                                   (sycl::half) (d * (float) (v >> 24) - mn));
+     }
+ }
+ 
+@@ -323,29 +335,46 @@ static __dpct_inline__ void fg_stage_a(const block_q5_K * __restrict__ xrow, con
+ 
+ // q5_1 and q8_0 blocks are one k step each. q5_1: value j is the low nibble of qs[j] plus bit j of
+ // qh, value j + 16 the high nibble plus bit j + 16 (dequantize_q5_1).
++// bit 4 of each byte of the result from bits 0-3 of x
++static __dpct_inline__ uint32_t fg_spread4(const uint32_t x) {
++    return ((x & 1) << 4) | ((x & 2) << 11) | ((x & 4) << 18) | ((x & 8) << 25);
++}
++
+ static __dpct_inline__ void fg_stage_a(const block_q5_1 * __restrict__ xrow, const int kb, sycl::half2 * a) {
+-    const block_q5_1 * blk = xrow + kb;
+-    const float        d   = blk->dm[0];
+-    const float        mn  = blk->dm[1];
+-    uint32_t           qh;
+-    memcpy(&qh, blk->qh, sizeof(qh));
++    // 24-byte blocks: dm at 0, qh at 4, qs at 8, all 8-byte aligned
++    const uint8_t *   b   = (const uint8_t *) (xrow + kb);
++    const sycl::half2 dm  = *(const sycl::half2 *) b;
++    const uint32_t    qh  = *(const uint32_t *) (b + 4);
++    const sycl::uint2 q01 = *(const sycl::uint2 *) (b + 8);
++    const sycl::uint2 q23 = *(const sycl::uint2 *) (b + 16);
++    const float       d   = dm[0];
++    const float       mn  = dm[1];
+ #pragma unroll
+-    for (int j = 0; j < QK5_1 / 2; j += 2) {
+-        const int x0 = (blk->qs[j]     & 0xf) | (((qh >> (j + 0)) << 4) & 0x10);
+-        const int x1 = (blk->qs[j + 1] & 0xf) | (((qh >> (j + 1)) << 4) & 0x10);
+-        const int y0 = (blk->qs[j]     >> 4)  | ((qh >> (j + 12)) & 0x10);
+-        const int y1 = (blk->qs[j + 1] >> 4)  | ((qh >> (j + 13)) & 0x10);
+-        a[j / 2]     = sycl::half2((sycl::half) (x0 * d + mn), (sycl::half) (x1 * d + mn));
+-        a[j / 2 + 8] = sycl::half2((sycl::half) (y0 * d + mn), (sycl::half) (y1 * d + mn));
++    for (int w = 0; w < 4; ++w) {
++        const uint32_t q  = w < 2 ? q01[w] : q23[w - 2];
++        // values 4w..4w+3 (low nibbles, qh bits 4w..) and 16+4w.. (high nibbles, qh bits 16+4w..)
++        const uint32_t lo = (q & 0x0f0f0f0f)        | fg_spread4((qh >> (4 * w)) & 0xf);
++        const uint32_t hi = ((q >> 4) & 0x0f0f0f0f) | fg_spread4((qh >> (16 + 4 * w)) & 0xf);
++        a[2 * w]         = sycl::half2((sycl::half) ((float) (lo & 0xff) * d + mn),
++                                       (sycl::half) ((float) ((lo >> 8) & 0xff) * d + mn));
++        a[2 * w + 1]     = sycl::half2((sycl::half) ((float) ((lo >> 16) & 0xff) * d + mn),
++                                       (sycl::half) ((float) (lo >> 24) * d + mn));
++        a[8 + 2 * w]     = sycl::half2((sycl::half) ((float) (hi & 0xff) * d + mn),
++                                       (sycl::half) ((float) ((hi >> 8) & 0xff) * d + mn));
++        a[8 + 2 * w + 1] = sycl::half2((sycl::half) ((float) ((hi >> 16) & 0xff) * d + mn),
++                                       (sycl::half) ((float) (hi >> 24) * d + mn));
+     }
+ }
+ 
+ static __dpct_inline__ void fg_stage_a(const block_q8_0 * __restrict__ xrow, const int kb, sycl::half2 * a) {
++    // 34-byte blocks are only 2-byte aligned: read the quants in pairs
+     const block_q8_0 * blk = xrow + kb;
+     const float        d   = blk->d;
++    const uint16_t *   q2  = (const uint16_t *) blk->qs;
+ #pragma unroll
+     for (int j = 0; j < QK8_0 / 2; ++j) {
+-        a[j] = sycl::half2((sycl::half) (d * blk->qs[2 * j]), (sycl::half) (d * blk->qs[2 * j + 1]));
++        const uint16_t q = q2[j];
++        a[j] = sycl::half2((sycl::half) (d * (float) (int8_t) (q & 0xff)), (sycl::half) (d * (float) (int8_t) (q >> 8)));
+     }
+ }
+ 

@@ -1,0 +1,335 @@
+diff --git a/ggml/src/ggml-sycl/common.hpp b/ggml/src/ggml-sycl/common.hpp
+index b290ddb96..49f4486c9 100644
+--- a/ggml/src/ggml-sycl/common.hpp
++++ b/ggml/src/ggml-sycl/common.hpp
+@@ -78,6 +78,11 @@ enum ggml_sycl_xmx_gather_type {
+     GGML_SYCL_XMX_GATHER_IQ2_S    = 1 << 6,
+     GGML_SYCL_XMX_GATHER_IQ1_S    = 1 << 7,
+     GGML_SYCL_XMX_GATHER_IQ1_M    = 1 << 8,
++    // grouped MUL_MAT_ID only
++    GGML_SYCL_XMX_GATHER_Q4_K     = 1 << 9,
++    GGML_SYCL_XMX_GATHER_Q5_K     = 1 << 10,
++    GGML_SYCL_XMX_GATHER_Q5_1     = 1 << 11,
++    GGML_SYCL_XMX_GATHER_Q8_0     = 1 << 12,
+ };
+ static constexpr int GGML_SYCL_XMX_GATHER_TYPES_DEFAULT = ~0;
+ extern int g_ggml_sycl_xmx_gather_types;
+diff --git a/ggml/src/ggml-sycl/fused-gemm.cpp b/ggml/src/ggml-sycl/fused-gemm.cpp
+index f14b2d39e..d85b1c153 100644
+--- a/ggml/src/ggml-sycl/fused-gemm.cpp
++++ b/ggml/src/ggml-sycl/fused-gemm.cpp
+@@ -275,12 +275,130 @@ static __dpct_inline__ void fg_stage_a(const block_iq1_m * __restrict__ xrow, co
+     }
+ }
+ 
++// 6-bit scale and min j of a q4_K/q5_K superblock (get_scale_min_k4)
++static __dpct_inline__ void fg_scale_min_k4(const int j, const uint8_t * __restrict__ q, int & d, int & m) {
++    if (j < 4) {
++        d = q[j] & 63;
++        m = q[j + 4] & 63;
++    } else {
++        d = (q[j + 4] & 0xf) | ((q[j - 4] >> 6) << 4);
++        m = (q[j + 4] >> 4)  | ((q[j]     >> 6) << 4);
++    }
++}
++
++// q4_K/q5_K: k step ib of a superblock is the low (even ib) or high (odd ib) nibbles of qs bytes
++// 32*(ib/2).., with its own scale and min; q5_K adds bit ib of qh[j] as 16. Same values as
++// dequantize_block_q4_K / _q5_K.
++template <bool has_qh>
++static __dpct_inline__ void fg_stage_kq(const uint8_t * __restrict__ qs, const uint8_t * __restrict__ qh,
++                                        const uint8_t * __restrict__ scales, const sycl::half2 dm, const int ib,
++                                        sycl::half2 * a) {
++    int sc, m;
++    fg_scale_min_k4(ib, scales, sc, m);
++    const float     d     = (float) dm[0] * sc;
++    const float     mn    = (float) dm[1] * m;
++    const uint8_t * q     = qs + 32 * (ib / 2);
++    const int       shift = 4 * (ib % 2);
++#pragma unroll
++    for (int j = 0; j < 16; ++j) {
++        int v0 = (q[2 * j]     >> shift) & 0xf;
++        int v1 = (q[2 * j + 1] >> shift) & 0xf;
++        if constexpr (has_qh) {
++            v0 |= ((qh[2 * j]     >> ib) & 1) << 4;
++            v1 |= ((qh[2 * j + 1] >> ib) & 1) << 4;
++        }
++        a[j] = sycl::half2((sycl::half) (d * v0 - mn), (sycl::half) (d * v1 - mn));
++    }
++}
++
++static __dpct_inline__ void fg_stage_a(const block_q4_K * __restrict__ xrow, const int kb, sycl::half2 * a) {
++    FG_SUPERBLOCK(block_q4_K);
++    fg_stage_kq<false>(blk->qs, nullptr, blk->scales, blk->dm, ib, a);
++}
++
++static __dpct_inline__ void fg_stage_a(const block_q5_K * __restrict__ xrow, const int kb, sycl::half2 * a) {
++    FG_SUPERBLOCK(block_q5_K);
++    fg_stage_kq<true>(blk->qs, blk->qh, blk->scales, blk->dm, ib, a);
++}
++
++// q5_1 and q8_0 blocks are one k step each. q5_1: value j is the low nibble of qs[j] plus bit j of
++// qh, value j + 16 the high nibble plus bit j + 16 (dequantize_q5_1).
++static __dpct_inline__ void fg_stage_a(const block_q5_1 * __restrict__ xrow, const int kb, sycl::half2 * a) {
++    const block_q5_1 * blk = xrow + kb;
++    const float        d   = blk->dm[0];
++    const float        mn  = blk->dm[1];
++    uint32_t           qh;
++    memcpy(&qh, blk->qh, sizeof(qh));
++#pragma unroll
++    for (int j = 0; j < QK5_1 / 2; j += 2) {
++        const int x0 = (blk->qs[j]     & 0xf) | (((qh >> (j + 0)) << 4) & 0x10);
++        const int x1 = (blk->qs[j + 1] & 0xf) | (((qh >> (j + 1)) << 4) & 0x10);
++        const int y0 = (blk->qs[j]     >> 4)  | ((qh >> (j + 12)) & 0x10);
++        const int y1 = (blk->qs[j + 1] >> 4)  | ((qh >> (j + 13)) & 0x10);
++        a[j / 2]     = sycl::half2((sycl::half) (x0 * d + mn), (sycl::half) (x1 * d + mn));
++        a[j / 2 + 8] = sycl::half2((sycl::half) (y0 * d + mn), (sycl::half) (y1 * d + mn));
++    }
++}
++
++static __dpct_inline__ void fg_stage_a(const block_q8_0 * __restrict__ xrow, const int kb, sycl::half2 * a) {
++    const block_q8_0 * blk = xrow + kb;
++    const float        d   = blk->d;
++#pragma unroll
++    for (int j = 0; j < QK8_0 / 2; ++j) {
++        a[j] = sycl::half2((sycl::half) (d * blk->qs[2 * j]), (sycl::half) (d * blk->qs[2 * j + 1]));
++    }
++}
++
++template <> struct fg_block_traits<block_q4_K> { static constexpr int qk = QK_K; };
++template <> struct fg_block_traits<block_q5_K> { static constexpr int qk = QK_K; };
++template <> struct fg_block_traits<block_q5_1> { static constexpr int qk = QK5_1; };
++template <> struct fg_block_traits<block_q8_0> { static constexpr int qk = QK8_0; };
++
++// A row of the weights as the tile reads it: row `row` of an M x K matrix stored at x. Stored
++// blocks by default; the SoA tags below cover the per-expert layouts of reorder_qw_q*_k_moe.
++template <typename block_q_t> struct fg_row {
++    const block_q_t * x;
++
++    fg_row(const void * base, const int row, const int /* M */, const int K) :
++        x((const block_q_t *) base + (size_t) row * (K / fg_block_traits<block_q_t>::qk)) {}
++
++    void stage(const int kb, sycl::half2 * a) const { fg_stage_a(x, kb, a); }
++};
++
++// [qs][qh (q5_K only)][scales][dm] over the nb = M*K/QK_K blocks of the matrix
++struct fg_q4_K_soa {};
++struct fg_q5_K_soa {};
++
++template <bool has_qh> struct fg_row_kq_soa {
++    static constexpr size_t qh_bytes = has_qh ? QK_K / 8 : 0;
++
++    const uint8_t * base;
++    size_t          nb;
++    size_t          blk0;
++
++    fg_row_kq_soa(const void * x, const int row, const int M, const int K) :
++        base((const uint8_t *) x), nb((size_t) M * (K / QK_K)), blk0((size_t) row * (K / QK_K)) {}
++
++    void stage(const int kb, sycl::half2 * a) const {
++        const size_t      g  = blk0 + kb / (QK_K / 32);
++        const uint8_t *   qs = base + g * (QK_K / 2);
++        const uint8_t *   qh = base + nb * (QK_K / 2) + g * qh_bytes;
++        const uint8_t *   sc = base + nb * (QK_K / 2 + qh_bytes) + g * K_SCALE_SIZE;
++        const sycl::half2 dm = *(const sycl::half2 *) (base + nb * (QK_K / 2 + qh_bytes + K_SCALE_SIZE) +
++                                                       g * sizeof(sycl::half2));
++        fg_stage_kq<has_qh>(qs, qh, sc, dm, kb % (QK_K / 32), a);
++    }
++};
++
++template <> struct fg_row<fg_q4_K_soa> : fg_row_kq_soa<false> { using fg_row_kq_soa<false>::fg_row_kq_soa; };
++template <> struct fg_row<fg_q5_K_soa> : fg_row_kq_soa<true>  { using fg_row_kq_soa<true>::fg_row_kq_soa; };
++
+ // one FG_SG_ROWS x FG_BN output tile: B columns [b0, b0 + FG_BN) of packed_b go to dst columns
+ // [n0, n1), n1 - n0 <= FG_BN
+ template <typename block_q_t>
+ [[sycl::reqd_sub_group_size(WARP_SIZE)]]
+ static void fused_dequant_gemm_tile(
+-    const block_q_t * __restrict__ x,
++    const void * __restrict__ x,
+     const sycl::half * __restrict__ packed_b,
+     float * __restrict__ dst,
+     const int M, const int Npad, const int K, const int ldd,
+@@ -307,7 +425,7 @@ static void fused_dequant_gemm_tile(
+ 
+     const int  row    = m0 + lane;
+     const bool row_ok = row < M;
+-    const block_q_t * xrow = x + (size_t) (row_ok ? row : 0) * (K / fg_block_traits<block_q_t>::qk);
++    const fg_row<block_q_t> xrow(x, row_ok ? row : 0, M, K);
+     sycl::half2 * a = (sycl::half2 *) &tile_a[a_base + lane * FG_BK];
+ 
+     const auto b_ptr = sycl::address_space_cast<sycl::access::address_space::global_space,
+@@ -318,7 +436,7 @@ static void fused_dequant_gemm_tile(
+     const int kb_end   = ((sg_id + 1) * nstep) / FG_KSPLIT;
+     for (int kb = kb_begin; kb < kb_end; ++kb) {
+         if (row_ok) {
+-            fg_stage_a(xrow, kb, a);
++            xrow.stage(kb, a);
+         } else {
+ #pragma unroll
+             for (int j = 0; j < FG_BK / 2; ++j) {
+@@ -550,7 +668,7 @@ bool ggml_sycl_fused_dequant_gemm_f16(ggml_type src0_type, const void * src0, co
+ }
+ 
+ bool ggml_sycl_grouped_dequant_gemm_f16(ggml_type src0_type, const void * src0_base, size_t expert_stride,
+-                                        const float * src1, float * dst, const int64_t * expert_row_offsets,
++                                        bool reordered, const float * src1, float * dst, const int64_t * expert_row_offsets,
+                                         int64_t n_as, int64_t M, int64_t K, int64_t total_rows,
+                                         std::vector<ggml_sycl_gg_tile> & tiles, ggml_sycl_pool & pool,
+                                         dpct::queue_ptr stream) {
+@@ -564,6 +682,9 @@ bool ggml_sycl_grouped_dequant_gemm_f16(ggml_type src0_type, const void * src0_b
+     if (!ggml_sycl_grouped_dequant_gemm_f16_shape_ok(src0_type, M, K, total_rows, n_active)) {
+         return false;
+     }
++    if (reordered && src0_type != GGML_TYPE_Q4_K && src0_type != GGML_TYPE_Q5_K) {
++        return false;
++    }
+     if (!ggml_sycl_fused_dequant_gemm_f16_device_ok(stream)) {
+         return false;
+     }
+@@ -626,6 +747,32 @@ bool ggml_sycl_grouped_dequant_gemm_f16(ggml_type src0_type, const void * src0_b
+             grouped_dequant_gemm_launch<block_iq1_m>(src0_dd, expert_stride, tiles_ptr, packed, dst, (int) M, Npad,
+                                                     (int) K, n_tiles, groups_m, stream);
+             break;
++        case GGML_TYPE_Q4_K:
++            if (reordered) {
++                grouped_dequant_gemm_launch<fg_q4_K_soa>(src0_dd, expert_stride, tiles_ptr, packed, dst, (int) M, Npad,
++                                                         (int) K, n_tiles, groups_m, stream);
++            } else {
++                grouped_dequant_gemm_launch<block_q4_K>(src0_dd, expert_stride, tiles_ptr, packed, dst, (int) M, Npad,
++                                                        (int) K, n_tiles, groups_m, stream);
++            }
++            break;
++        case GGML_TYPE_Q5_K:
++            if (reordered) {
++                grouped_dequant_gemm_launch<fg_q5_K_soa>(src0_dd, expert_stride, tiles_ptr, packed, dst, (int) M, Npad,
++                                                         (int) K, n_tiles, groups_m, stream);
++            } else {
++                grouped_dequant_gemm_launch<block_q5_K>(src0_dd, expert_stride, tiles_ptr, packed, dst, (int) M, Npad,
++                                                        (int) K, n_tiles, groups_m, stream);
++            }
++            break;
++        case GGML_TYPE_Q5_1:
++            grouped_dequant_gemm_launch<block_q5_1>(src0_dd, expert_stride, tiles_ptr, packed, dst, (int) M, Npad,
++                                                    (int) K, n_tiles, groups_m, stream);
++            break;
++        case GGML_TYPE_Q8_0:
++            grouped_dequant_gemm_launch<block_q8_0>(src0_dd, expert_stride, tiles_ptr, packed, dst, (int) M, Npad,
++                                                    (int) K, n_tiles, groups_m, stream);
++            break;
+         default:
+             return false;
+     }
+diff --git a/ggml/src/ggml-sycl/fused-gemm.hpp b/ggml/src/ggml-sycl/fused-gemm.hpp
+index abc566969..e9179515a 100644
+--- a/ggml/src/ggml-sycl/fused-gemm.hpp
++++ b/ggml/src/ggml-sycl/fused-gemm.hpp
+@@ -33,11 +33,23 @@ constexpr bool ggml_sycl_fused_dequant_gemm_f16_shape_ok(ggml_type src0_type, in
+            M <= INT32_MAX && N <= INT32_MAX && K <= INT32_MAX && ldd <= INT32_MAX;
+ }
+ 
++// the grouped variant also decodes the k-quants and legacy quants MoE experts are commonly kept in
++constexpr bool ggml_sycl_grouped_dequant_gemm_f16_type_ok(ggml_type src0_type, int64_t K) {
++    switch (src0_type) {
++        case GGML_TYPE_Q4_K:
++        case GGML_TYPE_Q5_K: return QK_K == 256 && K % QK_K == 0;
++        case GGML_TYPE_Q5_1: return K % QK5_1 == 0;
++        case GGML_TYPE_Q8_0: return K % QK8_0 == 0;
++        default:             return ggml_sycl_fused_dequant_gemm_f16_type_ok(src0_type, K);
++    }
++}
++
+ // grouped variant: the per-expert fused kernel is only worth it while each expert is narrow,
+ // so wider average slices are left to the per-expert library GEMM loop
+ constexpr bool ggml_sycl_grouped_dequant_gemm_f16_shape_ok(ggml_type src0_type, int64_t M, int64_t K,
+                                                            int64_t total_rows, int64_t n_active) {
+-    return ggml_sycl_fused_dequant_gemm_f16_shape_ok(src0_type, M, 1, K, M) && total_rows > 0 &&
++    return ggml_sycl_grouped_dequant_gemm_f16_type_ok(src0_type, K) && M > 0 && K > 0 &&
++           M <= INT32_MAX && K <= INT32_MAX && total_rows > 0 &&
+            total_rows <= INT32_MAX && total_rows <= n_active * GGML_SYCL_FG_MAX_N;
+ }
+ 
+@@ -53,6 +65,10 @@ inline bool ggml_sycl_xmx_gather_type_enabled(ggml_type src0_type) {
+         case GGML_TYPE_IQ2_S:   return (g_ggml_sycl_xmx_gather_types & GGML_SYCL_XMX_GATHER_IQ2_S   ) != 0;
+         case GGML_TYPE_IQ1_S:   return (g_ggml_sycl_xmx_gather_types & GGML_SYCL_XMX_GATHER_IQ1_S   ) != 0;
+         case GGML_TYPE_IQ1_M:   return (g_ggml_sycl_xmx_gather_types & GGML_SYCL_XMX_GATHER_IQ1_M   ) != 0;
++        case GGML_TYPE_Q4_K:    return (g_ggml_sycl_xmx_gather_types & GGML_SYCL_XMX_GATHER_Q4_K    ) != 0;
++        case GGML_TYPE_Q5_K:    return (g_ggml_sycl_xmx_gather_types & GGML_SYCL_XMX_GATHER_Q5_K    ) != 0;
++        case GGML_TYPE_Q5_1:    return (g_ggml_sycl_xmx_gather_types & GGML_SYCL_XMX_GATHER_Q5_1    ) != 0;
++        case GGML_TYPE_Q8_0:    return (g_ggml_sycl_xmx_gather_types & GGML_SYCL_XMX_GATHER_Q8_0    ) != 0;
+         default:          return false;
+     }
+ }
+@@ -69,10 +85,11 @@ bool ggml_sycl_fused_dequant_gemm_f16(ggml_type src0_type, const void * src0, co
+ // One launch for every expert of a MUL_MAT_ID: rows of src1/dst are grouped by expert, expert e
+ // owns rows [expert_row_offsets[e], expert_row_offsets[e+1]) and reads its weights at
+ // src0_base + e*expert_stride. tiles is host scratch that must stay alive until the queue drains.
++// reordered: Q4_K/Q5_K weights sit in the per-expert SoA layout of reorder_qw_q*_k_moe.
+ // dst[n*M + m] = sum_k dequant(src0_e)[m*K + k] * src1[n*K + k]
+ // Returns false when the case is not handled (type, device, or shape).
+ bool ggml_sycl_grouped_dequant_gemm_f16(ggml_type src0_type, const void * src0_base, size_t expert_stride,
+-                                        const float * src1, float * dst, const int64_t * expert_row_offsets,
++                                        bool reordered, const float * src1, float * dst, const int64_t * expert_row_offsets,
+                                         int64_t n_as, int64_t M, int64_t K, int64_t total_rows,
+                                         std::vector<ggml_sycl_gg_tile> & tiles, ggml_sycl_pool & pool,
+                                         dpct::queue_ptr stream);
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index 185d12f49..cf1c3bc22 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -5377,7 +5377,12 @@ static void ggml_sycl_mul_mat_id(ggml_backend_sycl_context & ctx,
+         if (ggml_is_contiguous(src0) && src1->type == GGML_TYPE_F32 &&
+             dst->type == GGML_TYPE_F32 && dst->op_params[0] == GGML_PREC_DEFAULT &&
+             nb11 == sizeof(float)*ne10 && nb1 == sizeof(float)*ne0) {
+-            grouped = ggml_sycl_grouped_dequant_gemm_f16(src0->type, src0_original, nb02,
++            // the decode path reorders Q4_K/Q5_K experts on first use; doing it here too means the
++            // grouped kernel only ever meets that layout once a prompt has run
++            opt_for_reorder_id(&ctx, src0);
++            const ggml_tensor_extra_gpu * src0_extra = static_cast<const ggml_tensor_extra_gpu *>(src0->extra);
++            const bool src0_reordered = src0_extra && src0_extra->optimized_feature.reorder;
++            grouped = ggml_sycl_grouped_dequant_gemm_f16(src0->type, src0_original, nb02, src0_reordered,
+                                                          (const float *) src1_contiguous.get(), (float *) dst_contiguous.get(),
+                                                          expert_row_offsets.data(), n_as, ne01, ne10, n_routed_rows,
+                                                          ctx.mmid_tile_schedule_host, ctx.pool(), stream);
+diff --git a/tests/test-backend-ops.cpp b/tests/test-backend-ops.cpp
+index 49426bf5c..abdbb5b56 100644
+--- a/tests/test-backend-ops.cpp
++++ b/tests/test-backend-ops.cpp
+@@ -10013,6 +10013,22 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
+         }
+     }
+ 
++    // grouped XMX MUL_MAT_ID on the formats Qwen3.8-Flash-Next UD-Q4_K_XL keeps its experts in:
++    // gate/up (k=2560, m=640) and down (k=640, m=2560), 512 experts, 10 used; n = 9 and 64 tokens.
++    // With n_used == n_mats every expert gets exactly n rows: 32, 33 and 64 cover one full tile, a
++    // one-row second tile and two full tiles; 65 is over the grouped gate and takes the loop.
++    for (ggml_type type_a : {GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q5_1, GGML_TYPE_Q8_0}) {
++        for (int n : {9, 64}) {
++            test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 512, 10, false, 640, n, 2560));
++        }
++        for (int n : {32, 33, 64, 65}) {
++            test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 4, 4, false, 512, n, 256));
++        }
++    }
++    for (ggml_type type_a : {GGML_TYPE_Q5_1, GGML_TYPE_Q8_0}) {
++        test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 512, 10, false, 2560, 64, 640));
++    }
++
+     // BF16 is absent from base_types: add the 3 standard non-contig permutations explicitly
+     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_BF16, GGML_TYPE_F32, 16,  1, 256, {2, 3}, {1, 1}, {0, 2, 1, 3}));
+     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_BF16, GGML_TYPE_F32, 16,  1, 256, {2, 3}, {1, 1}, {0, 1, 3, 2}));
+@@ -11328,6 +11344,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
+         test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {12, 1}, kv, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 1, 2, 3}, true, false, 2048));
+     }
+ 
++    // Qwen3.8-Flash-Next UD-Q4_K_XL MoE at one -ub 1536 prompt ubatch: gate/up and down
++    for (ggml_type type_a : {GGML_TYPE_Q4_K, GGML_TYPE_Q5_K}) {
++        test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 512, 10, false, 640, 1536, 2560));
++    }
++    for (ggml_type type_a : {GGML_TYPE_Q5_1, GGML_TYPE_Q8_0}) {
++        test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 512, 10, false, 2560, 1536, 640));
++    }
++
+     // qwen4exp QSA at agent-session depths: decode (1 row) and MTP verify (4 rows), top_k + r - 1 = 2051
+     for (int64_t kv : {32768, 131072, 262144}) {
+         for (int64_t nb : {1, 4}) {

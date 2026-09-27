@@ -1,0 +1,17 @@
+diff --git a/src/models/qwen4exp.cpp b/src/models/qwen4exp.cpp
+index 249aab39f..f5bd1ca3d 100644
+--- a/src/models/qwen4exp.cpp
++++ b/src/models/qwen4exp.cpp
+@@ -644,7 +644,11 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
+     ggml_tensor * concat = ggml_concat(ctx0, e_norm, h_norm, /*dim=*/ 0);
+     cb(concat, "mtp_concat", il);
+ 
+-    ggml_tensor * res_hc = build_lora_mm(layer.nextn.eh_proj, concat, layer.nextn.eh_proj_s);
++    // one [2*n_embd, hc*n_tokens] product: with a 3D src1 the SYCL backend runs one hc-column
++    // product per token, each reading the whole weight
++    ggml_tensor * res_hc = build_lora_mm(layer.nextn.eh_proj,
++            ggml_reshape_2d(ctx0, concat, 2 * n_embd, hc * n_tokens), layer.nextn.eh_proj_s);
++    res_hc = ggml_reshape_3d(ctx0, res_hc, n_embd, hc, n_tokens);
+     cb(res_hc, "mtp_eh_proj", il);
+ 
+     ggml_tensor * inject = nullptr;

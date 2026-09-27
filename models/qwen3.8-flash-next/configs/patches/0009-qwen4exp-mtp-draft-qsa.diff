@@ -1,0 +1,381 @@
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 9c5ef5658..19b7af8a6 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -2851,6 +2851,40 @@ static std::unique_ptr<llm_graph_input_attn_kv> build_attn_inp_kv_impl(
+     return inp;
+ }
+ 
++bool llm_graph_input_attn_kv_hyb::can_reuse(const llm_graph_params & params) {
++    const auto * mctx_hyb = static_cast<const llama_memory_hybrid_context *>(params.mctx);
++
++    this->mctx = mctx_hyb->get_attn();
++
++    bool res = true;
++
++    res &= self_k_idxs->ne[0] == params.ubatch.n_tokens;
++    res &= can_reuse_kq_mask(self_kq_mask, this->mctx, params.ubatch, params.cparams);
++
++    return res;
++}
++
++llm_graph_input_attn_kv * llm_graph_context::build_attn_inp_kv_hyb() const {
++    const auto * mctx_cur = static_cast<const llama_memory_hybrid_context *>(mctx)->get_attn();
++
++    auto inp = std::make_unique<llm_graph_input_attn_kv_hyb>(hparams, cparams, mctx_cur);
++
++    {
++        GGML_ASSERT(hparams.swa_type == LLAMA_SWA_TYPE_NONE && "Use llama_kv_cache_iswa for SWA");
++
++        inp->self_k_idxs = mctx_cur->build_input_k_idxs(ctx0, ubatch);
++        inp->self_v_idxs = mctx_cur->build_input_v_idxs(ctx0, ubatch);
++
++        inp->self_kq_mask = build_attn_inp_kq_mask(ctx0, mctx_cur, ubatch, cparams);
++        inp->self_kq_mask_cnv = inp->self_kq_mask;
++    }
++
++    inp->self_k_rot = mctx_cur->build_input_k_rot(ctx0);
++    inp->self_v_rot = mctx_cur->build_input_v_rot(ctx0);
++
++    return (llm_graph_input_attn_kv *) res->add_input(std::move(inp));
++}
++
+ llm_graph_input_attn_kv * llm_graph_context::build_attn_inp_kv() const {
+     const auto * mctx_cur = static_cast<const llama_kv_cache_context *>(mctx);
+ 
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+index cc4110639..971c31852 100644
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -318,6 +318,11 @@ public:
+     const llama_cparams cparams;
+ };
+ 
++class llm_graph_input_attn_kv;
++
++// llm_graph_input_attn_kv whose memory context is a hybrid one: reuse re-reads its attention part
++class llm_graph_input_attn_kv_hyb;
++
+ class llm_graph_input_attn_kv : public llm_graph_input_i {
+ public:
+     llm_graph_input_attn_kv(
+@@ -358,6 +363,13 @@ public:
+     const llama_kv_cache_context * mctx;
+ };
+ 
++class llm_graph_input_attn_kv_hyb : public llm_graph_input_attn_kv {
++public:
++    using llm_graph_input_attn_kv::llm_graph_input_attn_kv;
++
++    bool can_reuse(const llm_graph_params & params) override;
++};
++
+ // V-less input for the KV cache
+ // ref: https://github.com/ggml-org/llama.cpp/pull/19067
+ class llm_graph_input_attn_k : public llm_graph_input_i {
+@@ -1207,6 +1219,9 @@ struct llm_graph_context {
+ 
+     llm_graph_input_attn_kv * build_attn_inp_kv() const;
+ 
++    // the same over the attention cache of a hybrid memory, for graphs without recurrent layers
++    llm_graph_input_attn_kv * build_attn_inp_kv_hyb() const;
++
+     ggml_tensor * build_attn(
+             llm_graph_input_attn_kv * inp,
+             ggml_tensor * wo,
+diff --git a/src/llama-memory-hybrid-idx.cpp b/src/llama-memory-hybrid-idx.cpp
+index 8b5209a56..56efd913d 100644
+--- a/src/llama-memory-hybrid-idx.cpp
++++ b/src/llama-memory-hybrid-idx.cpp
+@@ -27,6 +27,19 @@ static bool llama_qsa_pooled_enabled() {
+ 
+ // A/B switch: while this file exists every ubatch takes the full re-pooling path; the cache
+ // catches up on the next fast ubatch (checked at most once a second)
++// A/B switch for the MTP draft only (attention-only memories): while this file exists its plans are
++// never fast, so the draft attends densely
++static bool llama_mtp_qsa_paused() {
++    static int64_t last  = -1;
++    static bool    state = false;
++    const int64_t now = ggml_time_us();
++    if (last < 0 || now - last > 1000000) {
++        last  = now;
++        state = access("/tmp/llama-mtp-qsa-off", F_OK) == 0;
++    }
++    return state;
++}
++
+ static bool llama_qsa_pooled_paused() {
+     static int64_t last  = -1;
+     static bool    state = false;
+@@ -281,8 +294,11 @@ void llama_memory_hybrid_idx::clear(bool data) {
+ }
+ 
+ bool llama_memory_hybrid_idx::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
+-    // same order as llama_memory_hybrid::seq_rm: the recurrent cache can refuse, so try it first
+-    if (!get_mem_recr()->seq_rm(seq_id, p0, p1)) {
++    // same order as llama_memory_hybrid::seq_rm: the recurrent cache can refuse, so try it first.
++    // attention-only: the recurrent cache holds no state, so drop its bookkeeping instead
++    if (attn_only) {
++        get_mem_recr()->seq_rm(seq_id, -1, -1);
++    } else if (!get_mem_recr()->seq_rm(seq_id, p0, p1)) {
+         return false;
+     }
+ 
+@@ -298,6 +314,14 @@ bool llama_memory_hybrid_idx::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_po
+     return get_mem_attn()->seq_rm(seq_id, p0, p1);
+ }
+ 
++llama_pos llama_memory_hybrid_idx::seq_pos_min(llama_seq_id seq_id) const {
++    return attn_only ? get_mem_attn()->seq_pos_min(seq_id) : llama_memory_hybrid::seq_pos_min(seq_id);
++}
++
++llama_pos llama_memory_hybrid_idx::seq_pos_max(llama_seq_id seq_id) const {
++    return attn_only ? get_mem_attn()->seq_pos_max(seq_id) : llama_memory_hybrid::seq_pos_max(seq_id);
++}
++
+ void llama_memory_hybrid_idx::seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1) {
+     llama_memory_hybrid::seq_cp(seq_id_src, seq_id_dst, p0, p1);
+ 
+@@ -887,7 +911,8 @@ const llama_memory_hybrid_idx_context::qsa_plan & llama_memory_hybrid_idx_contex
+ 
+     // the fast path: one stream with one sequence, unique positions, the per-block bias
+     if (!is_batch || !mem || !idx || mem->qsa_pool_ratio != ratio || mem->qsa_valid.size() != 1 ||
+-        !blk_bias || get_n_stream() != 1 || llama_qsa_pooled_paused()) {
++        !blk_bias || get_n_stream() != 1 || llama_qsa_pooled_paused() ||
++        (mem->attn_only && llama_mtp_qsa_paused())) {
+         return p;
+     }
+ 
+diff --git a/src/llama-memory-hybrid-idx.h b/src/llama-memory-hybrid-idx.h
+index 3e4a00c14..5ff0b2fc8 100644
+--- a/src/llama-memory-hybrid-idx.h
++++ b/src/llama-memory-hybrid-idx.h
+@@ -61,6 +61,9 @@ public:
+     void clear(bool data) override;
+ 
+     bool seq_rm  (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1) override;
++
++    llama_pos seq_pos_min(llama_seq_id seq_id) const override;
++    llama_pos seq_pos_max(llama_seq_id seq_id) const override;
+     void seq_cp  (llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1) override;
+     void seq_keep(llama_seq_id seq_id)                                                          override;
+     void seq_add (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1, llama_pos shift) override;
+@@ -97,7 +100,13 @@ public:
+     ggml_tensor * get_qsa_pool(int32_t il) const;
+     int64_t       get_qsa_pool_rows() const { return qsa_pool_rows; }
+ 
++    // no recurrent layers (the qwen4exp MTP draft): the empty recurrent cache must not refuse a
++    // partial seq_rm, and positions come from the attention cache alone
++    void set_attn_only() { attn_only = true; }
++
+ private:
++    bool attn_only = false;
++
+     friend class llama_memory_hybrid_idx_context;
+ 
+     // lower the pooled-key watermark of a stream (every stream if stream < 0) to block blk
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index c2176077a..7bc2dcca9 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -2731,6 +2731,46 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params,
+                                     reuse,
+                                     share);
+                         }
++                    } else if (mtp_on_hybrid_qwen && arch == LLM_ARCH_QWEN4EXP && hparams.indexer_head_size > 0 &&
++                               [&] {
++                                   // QSA draft: a nextn attention layer with a compress ratio (set at load
++                                   // unless LLAMA_MTP_QSA=0), and no sliding window requested
++                                   const char * w = getenv("LLAMA_MTP_WINDOW");
++                                   if (w != nullptr && atoi(w) > 0) {
++                                       return false;
++                                   }
++                                   for (uint32_t il = hparams.n_layer(); il < hparams.n_layer_all; ++il) {
++                                       if (!hparams.is_recr(il) && hparams.dsv4_compress_ratios[il] > 0) {
++                                           return true;
++                                       }
++                                   }
++                                   return false;
++                               }()) {
++                        // the MTP draft's own attention, indexer and pooled-key caches; no recurrent layers
++                        auto * mem = new llama_memory_hybrid_idx(
++                            /* model             */ *this,
++                            /* attn_type_k       */ params.type_k,
++                            /* attn_type_v       */ params.type_v,
++                            /* attn_v_trans      */ !cparams.flash_attn,
++                            /* attn_kv_size      */ cparams.n_ctx_seq,
++                            /* attn_n_pad        */ 1,
++                            /* attn_n_swa        */ 0,
++                            /* attn_swa_type     */ LLAMA_SWA_TYPE_NONE,
++                            /* recurrent_type_k  */ GGML_TYPE_F32,
++                            /* recurrent_type_v  */ GGML_TYPE_F32,
++                            /* recurrent_kv_size */ std::max((uint32_t) 1, cparams.n_seq_max),
++                            /* n_seq_max         */ cparams.n_seq_max,
++                            /* n_rs_seq          */ 0,
++                            /* offload           */ cparams.offload_kqv,
++                            /* unified           */ cparams.kv_unified,
++                            /* filter_attn       */ [&](uint32_t il) { return il >= hparams.n_layer(); },
++                            /* filter_recr       */ [&](uint32_t)    { return false; },
++                            /* filter_idx        */ [&](uint32_t il) {
++                                return il >= hparams.n_layer() && !hparams.is_recr(il) && hparams.dsv4_compress_ratios[il] > 0;
++                            });
++                        mem->set_attn_only();
++                        LLAMA_LOG_INFO("%s: MTP draft memory: attention + QSA indexer (attention-only hybrid)\n", __func__);
++                        res = mem;
+                     } else {
+                         GGML_ASSERT(!hparams.is_swa_any());
+ 
+diff --git a/src/models/qwen4exp.cpp b/src/models/qwen4exp.cpp
+index e71864be4..f0f33ca35 100644
+--- a/src/models/qwen4exp.cpp
++++ b/src/models/qwen4exp.cpp
+@@ -153,6 +153,33 @@ void llama_model_qwen4exp::load_arch_hparams(llama_model_loader & ml) {
+         }
+     }
+ 
++    // The reference builds the MTP block as a QSA layer with its own indexer, using the text config's
++    // compress ratio, but the converter writes ratio 0 for it. Give nextn attention layers the trunk's
++    // ratio when it is uniform. LLAMA_MTP_QSA=0 keeps the dense draft.
++    if (hparams.n_layer_nextn > 0 && hparams.indexer_head_size > 0) {
++        const char * e = getenv("LLAMA_MTP_QSA");
++        if (e == nullptr || atoi(e) != 0) {
++            uint32_t r_trunk = 0;
++            bool     uniform = true;
++            for (uint32_t i = 0; i < hparams.n_layer(); ++i) {
++                const uint32_t r = hparams.dsv4_compress_ratios[i];
++                if (hparams.is_recr_impl[i] || r == 0) {
++                    continue;
++                }
++                uniform &= r_trunk == 0 || r_trunk == r;
++                r_trunk  = r;
++            }
++            if (uniform && r_trunk > 0) {
++                for (uint32_t i = hparams.n_layer(); i < hparams.n_layer_all; ++i) {
++                    if (!hparams.is_recr_impl[i] && hparams.dsv4_compress_ratios[i] == 0) {
++                        hparams.dsv4_compress_ratios[i] = r_trunk;
++                        LLAMA_LOG_INFO("%s: MTP layer %u attends with QSA (compress ratio %u)\n", __func__, i, r_trunk);
++                    }
++                }
++            }
++        }
++    }
++
+     // the PLE conv history is a row of the recurrent cache, which linear layers alone have
+     for (uint32_t i = 0; i < hparams.n_layer_all; ++i) {
+         if (hparams.is_ple(i) && !hparams.is_recr(i)) {
+@@ -519,7 +546,27 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
+     ggml_build_forward_expand(gf, cur);
+ }
+ 
+-// TODO: QSA for the draft head; dense is a numerical superset below the 2048-token budget.
++// the indexer cache's write indices for ubatches that store raw indexer keys without selecting
++class llm_graph_input_idx_k : public llm_graph_input_i {
++public:
++    explicit llm_graph_input_idx_k(const llama_memory_hybrid_idx_context * mctx) : mctx(mctx) {}
++
++    void set_input(const llama_ubatch * ubatch) override {
++        mctx->get_idx()->set_input_k_idxs(k_idxs, ubatch);
++    }
++
++    bool can_reuse(const llm_graph_params & params) override {
++        mctx = static_cast<const llama_memory_hybrid_idx_context *>(params.mctx);
++        return mctx->get_idx() != nullptr && k_idxs->ne[0] == params.ubatch.n_tokens;
++    }
++
++    ggml_tensor * k_idxs = nullptr;   // I32 [n_tokens]
++
++    const llama_memory_hybrid_idx_context * mctx;
++};
++
++// The draft head attends with QSA when its layer has a compress ratio (set at load, see load_arch_hparams)
++// and the draft memory is the attention-only hybrid_idx; otherwise dense, a numerical superset below the budget.
+ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_graph_params & params) :
+     graph(model, params, no_build_t{}) {
+     GGML_ASSERT(hparams.n_layer_nextn > 0 && "QWEN4EXP MTP requires n_layer_nextn > 0");
+@@ -572,7 +619,14 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
+     ggml_tensor * inp_pos     = build_inp_pos();
+     ggml_tensor * inp_out_ids = build_inp_out_ids();
+ 
+-    auto * inp_attn = build_attn_inp_kv();
++    // QSA draft: the memory is an attention-only llama_memory_hybrid_idx (see create_memory)
++    static const bool mtp_window_set = [] {
++        const char * w = getenv("LLAMA_MTP_WINDOW");
++        return w != nullptr && atoi(w) > 0;
++    }();
++    const bool draft_qsa = !mtp_window_set && hparams.dsv4_compress_ratios[il] > 0 && hparams.indexer_head_size > 0;
++
++    auto * inp_attn = draft_qsa ? build_attn_inp_kv_hyb() : build_attn_inp_kv();
+ 
+     ggml_tensor * h_norm = ggml_rms_norm(ctx0, h_state, hparams.f_norm_rms_eps);
+     h_norm = ggml_reshape_2d(ctx0, h_norm, hc_dim, n_tokens);
+@@ -639,6 +693,46 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
+     const float kq_scale = hparams.f_attention_scale == 0.0f
+             ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
+ 
++    // QSA draft: decodes with outputs, a handful of tokens and a pooled (fast) plan select their cells
++    // like the trunk layers and attend sparsely. Everything else stores K, V and the raw indexer key,
++    // and its output rows (if any) attend densely below.
++    bool attended = false;
++    if (draft_qsa) {
++        const auto * mctx_hyb = static_cast<const llama_memory_hybrid_idx_context *>(mctx);
++        const auto * mctx_idx = mctx_hyb->get_idx();
++        GGML_ASSERT(mctx_idx != nullptr && mctx_idx->get_n_kv() == inp_attn->mctx->get_n_kv() &&
++                "QWEN4EXP MTP: the draft's indexer cache must track its attention cache cell for cell");
++
++        ggml_tensor * kq_mask = inp_attn->get_kq_mask();
++        const int64_t n_kv     = mctx_idx->get_n_kv();
++        const int64_t n_stream = mctx_hyb->get_n_stream();
++
++        const bool blk_bias = kq_mask->ne[0] == n_kv && kq_mask->ne[1] == n_tokens/n_stream && kq_mask->ne[3] == n_stream &&
++                              cparams.causal_attn && !hparams.use_alibi;
++
++        const bool use_qsa = n_outputs > 0 && n_tokens <= 8 && blk_bias &&
++                             mctx_hyb->get_qsa_plan(hparams.dsv4_compress_ratios[il], blk_bias).fast;
++
++        if (use_qsa) {
++            ggml_tensor * top_k = build_qsa_top_k(mctx_hyb, cur, inp_pos, kq_mask, sections, il);
++            cur = build_attn_qsa(inp_attn, Qcur, Kcur, Vcur, top_k, kq_scale, il);
++            attended = true;
++        } else {
++            // keep the indexer cache complete for later selections
++            auto inp_idx = std::make_unique<llm_graph_input_idx_k>(mctx_hyb);
++            inp_idx->k_idxs = mctx_idx->build_input_k_idxs(ctx0, ubatch);
++            ggml_set_input(inp_idx->k_idxs);
++
++            ggml_tensor * k_raw = build_lora_mm(model.layers[il].index_k_proj, cur);
++            k_raw = ggml_reshape_3d(ctx0, k_raw, hparams.indexer_head_size, 1, n_tokens);
++            cb(k_raw, "mtp_indexer_k_raw", il);
++            ggml_build_forward_expand(gf, mctx_idx->cpy_k(ctx0, k_raw, inp_idx->k_idxs, il));
++
++            res->add_input(std::move(inp_idx));
++        }
++    }
++
++    if (!attended) {
+     // As build_attn, except that only output rows attend. Every row stores its K and V, which later
+     // draft steps read, but the graph keeps only the output rows after the projection; catch-ups and
+     // prompt chunks ask for no outputs and skip the attention (a scan of the whole cache) entirely.
+@@ -694,8 +788,12 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
+             cur = llama_mul_mat_hadamard(ctx0, cur, inp_attn->self_v_rot);
+         }
+     }
++    }
+     cb(cur, "mtp_attn_pregate", il);
+ 
++    // the dense branch above attends output rows only; the QSA branch attends every row
++    const bool rows_selected = !attended && inp_out_ids && n_outputs < n_tokens;
++
+     cur = ggml_mul(ctx0, cur, ggml_sigmoid(ctx0, gate));
+     cb(cur, "mtp_attn_gated", il);
+ 
+@@ -703,8 +801,8 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
+     cb(cur, "mtp_attn_out", il);
+ 
+     if (inp_out_ids) {
+-        // cur already holds only the output rows when some rows have none
+-        if (n_outputs == n_tokens) {
++        // cur already holds only the output rows when the dense branch selected them
++        if (!rows_selected) {
+             cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+         }
+         inject = ggml_get_rows(ctx0, inject, inp_out_ids);

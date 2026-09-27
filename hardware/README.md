@@ -6,7 +6,7 @@ GPU specifications and the host machines we run them in. One file per host in [`
 
 | GPU | Architecture | VRAM | Memory bandwidth | Power (default / max) | Idle board power (ASPM off / L1) | AOT target |
 |---|---|---|---|---|---|---|
-| Intel Arc Pro B70 | Battlemage (Xe2), BMG-G31 | 32 GB (32,656 MiB physical, about 30.3 GiB usable) | 608 GB/s | 150 W / 230 W | 44–49 W / 4–6 W, model loaded ([finding](../findings/bmg-aspm-l1-idle-power.md)) | `bmg-g31-a0` |
+| Intel Arc Pro B70 | Battlemage (Xe2), BMG-G31 | 32 GB (32,656 MiB physical, about 30.3 GiB usable) | 608 GB/s (vendor figure, not measured here) | 150 W / 230 W | 44–49 W / 4–6 W, model loaded ([finding](../findings/bmg-aspm-l1-idle-power.md)) | `bmg-g31-a0` |
 
 Add other Arc Pro and Arc cards here as they are tested.
 

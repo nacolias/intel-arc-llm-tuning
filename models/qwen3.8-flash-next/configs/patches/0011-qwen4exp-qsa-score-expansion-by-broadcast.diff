@@ -1,0 +1,113 @@
+diff --git a/src/llama-memory-hybrid-idx.cpp b/src/llama-memory-hybrid-idx.cpp
+index 56efd913d..241398e52 100644
+--- a/src/llama-memory-hybrid-idx.cpp
++++ b/src/llama-memory-hybrid-idx.cpp
+@@ -949,6 +949,8 @@ const llama_memory_hybrid_idx_context::qsa_plan & llama_memory_hybrid_idx_contex
+     p.member  .assign(r*n_blocks, 0);
+     p.dirty   .clear();
+ 
++    bool ident = n_blocks*r == n_kv;
++
+     for (int64_t j = 0; j < n_kv; ++j) {
+         if (cells.is_empty(j)) {
+             continue;
+@@ -967,6 +969,8 @@ const llama_memory_hybrid_idx_context::qsa_plan & llama_memory_hybrid_idx_contex
+         p.seen[b]         |= (uint8_t) (1u << k);
+         p.member[b*r + k]  = (int32_t) j;
+         p.cell_blk[j]      = (int32_t) b;
++
++        ident &= pos == (llama_pos) j;
+     }
+ 
+     const uint8_t full = (uint8_t) ((1u << r) - 1);
+@@ -994,6 +998,7 @@ const llama_memory_hybrid_idx_context::qsa_plan & llama_memory_hybrid_idx_contex
+ 
+     p.n_dirty = d;
+     p.stream  = stream;
++    p.ident   = ident;
+     p.fast    = true;
+ 
+     return p;
+@@ -1021,9 +1026,12 @@ void llama_memory_hybrid_idx_context::set_input_qsa_fast(
+     GGML_ASSERT(d == p.n_dirty && n <= d);
+     GGML_ASSERT((int64_t) p.cell_blk.size() == n_kv && (int64_t) p.seen.size() == n_blocks);
+     GGML_ASSERT(n_tps == (int64_t) ubatch->n_tokens);
+-    GGML_ASSERT(ggml_backend_buffer_is_host(cell_blk->buffer));
+ 
+-    memcpy(cell_blk->data, p.cell_blk.data(), n_kv*sizeof(int32_t));
++    // the ident broadcast (cells in position order) doesn't read cell_blk, so it has no buffer
++    if (cell_blk->buffer) {
++        GGML_ASSERT(ggml_backend_buffer_is_host(cell_blk->buffer));
++        memcpy(cell_blk->data, p.cell_blk.data(), n_kv*sizeof(int32_t));
++    }
+ 
+     int32_t * dst_cells = (int32_t *) dirty_cells->data;
+     int64_t * dst_rows  = (int64_t *) dirty_rows->data;
+diff --git a/src/llama-memory-hybrid-idx.h b/src/llama-memory-hybrid-idx.h
+index 5ff0b2fc8..dfed13d8a 100644
+--- a/src/llama-memory-hybrid-idx.h
++++ b/src/llama-memory-hybrid-idx.h
+@@ -185,6 +185,7 @@ public:
+     // how the current ubatch uses the pooled-key cache, for one compress ratio
+     struct qsa_plan {
+         bool    fast    = false;    // false: take the full re-pooling path (set_input_qsa)
++        bool    ident   = false;    // every cached cell j holds position j: block of cell j is j/ratio
+         int64_t n_dirty = 0;        // padded number of blocks to pool this ubatch
+         int32_t stream  = 0;        // global stream of the ubatch
+ 
+diff --git a/src/models/qwen4exp.cpp b/src/models/qwen4exp.cpp
+index f0f33ca35..249aab39f 100644
+--- a/src/models/qwen4exp.cpp
++++ b/src/models/qwen4exp.cpp
+@@ -925,6 +925,7 @@ public:
+         res &= plan.fast == fast;
+         if (fast) {
+             res &= plan.n_dirty == n_dirty;
++            res &= plan.ident == ident;
+         } else {
+             res &= blk_cells->ne[0] == (int64_t) ratio*n_blocks;
+             res &= blk_pos->ne[0]   == 4*n_blocks*n_stream;
+@@ -935,6 +936,7 @@ public:
+ 
+     // pooled path: only the blocks this ubatch completes (or a catch-up) are pooled, into the cache
+     bool          fast        = false;
++    bool          ident       = false;   // cells in position order: scores expand by broadcast
+     int64_t       n_dirty     = 0;
+     ggml_tensor * dirty_cells = nullptr;   // I32 [ratio*n_dirty]
+     ggml_tensor * dirty_rows  = nullptr;   // I64 [n_dirty]  pool rows (stream*rows + block)
+@@ -997,6 +999,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
+         const auto & plan = mctx_hyb->get_qsa_plan((uint32_t) r, blk_bias);
+ 
+         qsa->fast      = plan.fast;
++        qsa->ident     = plan.fast && plan.ident && n_stream == 1;
+         qsa->k_idxs    = mctx_idx->build_input_k_idxs(ctx0, ubatch);
+         qsa->cell_blk  = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_kv, n_stream);
+         qsa->bias      = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, blk_bias ? n_blocks : n_kv, n_tps, n_stream);
+@@ -1138,7 +1141,18 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
+     }
+ 
+     // every token of a block gets the block score; the budget is whole blocks, so top-k cuts on a block boundary
+-    ggml_tensor * expanded = ggml_get_rows(ctx0,
++    ggml_tensor * expanded = nullptr;
++
++    if (inp->ident) {
++        // cell j holds position j, so its block is j/r: add the scores [1, n_blocks, n_tps] onto the
++        // mask viewed as [r, n_blocks, n_tps] by broadcast. Same values as the gather below.
++        ggml_tensor * mask = kq_mask->type == GGML_TYPE_F32 ? kq_mask : ggml_cast(ctx0, kq_mask, GGML_TYPE_F32);
++        mask = ggml_reshape_3d(ctx0, mask, r, n_blocks, n_tps);
++        expanded = ggml_add(ctx0, mask, ggml_reshape_3d(ctx0, score, 1, n_blocks, n_tps));
++        expanded = ggml_reshape_3d(ctx0, expanded, n_kv, n_tps, n_stream);
++        cb(expanded, "indexer_score_tokens", il);
++    } else {
++    expanded = ggml_get_rows(ctx0,
+             ggml_cont(ctx0, ggml_permute(ctx0, score, 1, 0, 2, 3)), inp->cell_blk);
+     expanded = ggml_cont(ctx0, ggml_permute(ctx0, expanded, 1, 0, 2, 3));
+ 
+@@ -1150,6 +1164,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
+         expanded = ggml_add(ctx0, expanded, inp->bias);
+     }
+     cb(expanded, "indexer_score_tokens", il);
++    }
+ 
+     // the reference returns indexer_top_k + compress_ratio - 1: whole blocks plus the tail
+     const int64_t width = std::min<int64_t>(n_kv, (int64_t) hparams.indexer_top_k + r - 1);

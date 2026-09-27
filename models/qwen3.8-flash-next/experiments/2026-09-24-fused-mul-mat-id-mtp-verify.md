@@ -66,7 +66,7 @@ Three commits on top of PR #28243 at `6fcaa16`, frozen as build `20260924-7e5cb8
 | Single-stream tok/s, ~39k | about 35 | 44-45 | +26% to +29% |
 | Aggregate at c8 / c16 | not applicable (one slot) | | |
 
-- The before values are the session's representative figures. The same config ranged 31-38 tok/s on short runs in that day's service journal, with acceptance from 57% to 71%, so a single run cannot resolve a 5% change.
+- The before values are the session's representative figures (before values from the 2026-09-24 session log, not archived). The same config ranged 31-38 tok/s on short runs in that day's service journal, with acceptance from 57% to 71%, so a single run cannot resolve a 5% change.
 - A reference run of this build from the [draft-length sweep](2026-09-24-mtp-draft-length-sweep.md), the same day: short median 43.6 tok/s (42.3-45.6), 53.6 at ~10k, 44.0 at ~39k.
 - The gain is below the 50-60 tok/s estimate. Before the change, a profile of the unpatched build showed the server's main thread at 96% of one core and each card's compute engine busy only 16-18% ([raw/2026-09-24-decode-profile.csv](../benchmarks/raw/2026-09-24-decode-profile.csv)). Layer split runs the cards one after another, and each token still launches about 4,000 kernels, so the host stays the limit.
 - The gettid cache and #28931 were not measured on their own. The research estimates were +2% to +5% and +1% to +2%.
