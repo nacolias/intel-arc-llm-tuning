@@ -17,6 +17,7 @@ Reconstructed from the [tuning blueprint](../research/tuning-blueprint.md). No p
 
 | Date | Experiment | Change | Result | Status |
 |---|---|---|---|---|
+| 2026-09-23 | [TP4 and two TP2 lanes on the quad-B70 host](2026-09-23-tp4-and-dual-tp2-quad-b70.md) | `--tensor-parallel-size 4`, all four cards visible, `--enable-sleep-mode` | 129.1 tok/s single-stream vs 86.0 at TP2 (synthetic bench); earlier attempts without the sleep-mode allocator exhausted host RAM | inconclusive |
 | | power cap 230 W per card | `xpu-smi config --powerlimit 230` | | planned |
 | | MTP depth 4 | `num_speculative_tokens: 4` | | planned |
 | | oneCCL twoshots | `CCL_SYCL_ALLREDUCE_LL=twoshots`, `CCL_SEND/RECV=direct` | | planned |

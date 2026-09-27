@@ -52,3 +52,7 @@ Best measured configuration per model and host. Update when a model card's headl
 | Model | Host | Config | Single-stream | c8 aggregate | c16 aggregate | Date |
 |---|---|---|---|---|---|---|
 | Qwen3.8-27B GPTQ INT4 | dual-b70-5800x (2x B70) | TP2, MTP2, XPU graphs, FP8 KV | 78 to 84 tok/s | 291.6 tok/s | 405 to 442 tok/s | 2026-09 |
+| Qwen3.8-27B GPTQ INT4 (DavidAU merge) | quad-b70-5800x-pex88096 (4x B70) | vLLM TP4, MTP3, XPU graphs, FP8 KV, sleep-mode allocator ([benchmark](../models/qwen3.8-27b/benchmarks/2026-09-23-tp4-quad-b70.md)) | 129.1 tok/s | not run | 969.0 tok/s | 2026-09-23 |
+| Qwen3.8-Flash-Next `UD-Q4_K_XL` (abliterated) | quad-b70-5800x-pex88096 (4x B70) | llama.cpp SYCL layer split, 262K context, MTP draft 3, sparse FA, pooled QSA key cache ([benchmark](../models/qwen3.8-flash-next/benchmarks/2026-09-25-production-build.md)) | 48.6 to 50.5 tok/s short; about 39 tok/s at 135K ([agent session](../models/qwen3.8-flash-next/benchmarks/2026-09-25-agent-session-135k.md)) | n/a (single slot) | n/a (single slot) | 2026-09-25 |
+
+The quad-host Qwen3.8-27B row used a synthetic single-prompt benchmark (same prompt in every stream, 512 tokens, one pass) with the PCIe uplink at Gen1. It is not comparable with the dual-host row.

@@ -31,6 +31,9 @@ arxiv.org
 # Public sites cited as sources
 reddit.com
 archive.org
+asrock.com  # motherboard vendor; public board manual cited in findings/bmg-aspm-l1-idle-power.md
+broadcom.com  # PCIe switch vendor; public PEX88000 product brief cited in the quad-b70 host file
+pcgameshardware.de  # public press review of the Arc Pro B70, cited for idle power
 
 # Version numbers that look like IPv4 addresses
 26.18.8.2  # Intel multi-arc-bmg-offline-installer release

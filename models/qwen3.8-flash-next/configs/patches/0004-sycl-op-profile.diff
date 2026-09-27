@@ -1,0 +1,178 @@
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index 8599cab7f..3bec4b2cd 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -24,6 +24,10 @@
+ #include <stdint.h>
+ #include <stdio.h>
+ #include <vector>
++#include <chrono>
++#include <unistd.h>
++#include <map>
++#include <string>
+ #include <cmath>
+ #include <iostream>
+ #include <fstream>
+@@ -107,6 +111,9 @@ int g_ggml_sycl_prioritize_dmmv = 0;
+ // Small multi-token MUL_MAT_ID batches (MTP verify, short prompts) run the fused single-token
+ // MMVQ path once per token instead of the host-synchronised per-expert loop.
+ int g_ggml_sycl_mmid_multitoken = 1;
++int g_ggml_sycl_mmid_multitoken_max =
++    MMVQ_MAX_BATCH_SIZE;
++int g_ggml_sycl_op_profile = 0;
+ int g_ggml_sycl_use_async_mem_op = 0;
+ int g_ggml_sycl_use_async_mem_op_requested = 1;
+ int g_ggml_sycl_use_level_zero_api = 0;
+@@ -363,6 +370,9 @@ static void ggml_check_sycl() try {
+         g_ggml_sycl_prioritize_dmmv = ggml_sycl_get_env("GGML_SYCL_PRIORITIZE_DMMV", 0);
+         g_ggml_sycl_mmid_multitoken =
+             ggml_sycl_get_env("GGML_SYCL_MMID_MULTITOKEN", 1);
++        g_ggml_sycl_mmid_multitoken_max =
++            ggml_sycl_get_env("GGML_SYCL_MMID_MULTITOKEN_MAX", MMVQ_MAX_BATCH_SIZE);
++        g_ggml_sycl_op_profile = ggml_sycl_get_env("GGML_SYCL_OP_PROFILE", 0);
+ 
+ #ifdef GGML_SYCL_SUPPORT_LEVEL_ZERO_API
+         g_ggml_sycl_use_level_zero_api = ggml_sycl_get_env("GGML_SYCL_USE_LEVEL_ZERO_API", 1);
+@@ -483,6 +493,8 @@ static void ggml_check_sycl() try {
+ 
+         GGML_LOG_INFO("  GGML_SYCL_PRIORITIZE_DMMV: %d\n", g_ggml_sycl_prioritize_dmmv);
+         GGML_LOG_INFO("  GGML_SYCL_MMID_MULTITOKEN: %d\n", g_ggml_sycl_mmid_multitoken);
++        GGML_LOG_INFO("  GGML_SYCL_MMID_MULTITOKEN_MAX: %d\n", g_ggml_sycl_mmid_multitoken_max);
++        GGML_LOG_INFO("  GGML_SYCL_OP_PROFILE: %d\n", g_ggml_sycl_op_profile);
+ 
+         g_ggml_sycl_use_async_mem_op_requested = ggml_sycl_get_env("GGML_SYCL_USE_ASYNC_MEM_OP", 1);
+         GGML_LOG_INFO("  GGML_SYCL_USE_ASYNC_MEM_OP: %d\n", g_ggml_sycl_use_async_mem_op_requested);
+@@ -5203,7 +5215,7 @@ static void ggml_sycl_mul_mat_id(ggml_backend_sycl_context & ctx,
+         if (ggml_sycl_mul_mat_id_mmvq_fused(ctx, src0, src1, ids, dst)) {
+             return;
+         }
+-    } else if (g_ggml_sycl_mmid_multitoken && ne12 <= MMVQ_MAX_BATCH_SIZE && ids->ne[1] == ne12 &&
++    } else if (g_ggml_sycl_mmid_multitoken && ne12 <= g_ggml_sycl_mmid_multitoken_max && ids->ne[1] == ne12 &&
+                ids->nb[0] == sizeof(int32_t) && ne13 == 1 && ids->ne[2] == 1) {
+         // Small batches (MTP verify passes of 2-4 tokens, short prompts): run the fused
+         // single-token path on a per-token view. The per-expert loop below copies ids to the
+@@ -6084,8 +6096,102 @@ static int ggml_sycl_try_gdn_cache_fusion(const ggml_cgraph * cgraph, int node_i
+     return skip;
+ }
+ 
++// GGML_SYCL_OP_PROFILE=<seconds>: time each op, or each fused group, with the host clock around its
++// launch plus a queue wait, and print the totals every <seconds>. The wait stops ops from
++// overlapping, so absolute times run high; use the shares. Keys drop the "-<layer>" suffix of the
++// node name so all layers of an op add up; "+" marks a fused group, keyed by its first node.
++struct ggml_sycl_op_prof_entry {
++    double  ms = 0.0;
++    int64_t n  = 0;
++};
++static std::map<std::string, ggml_sycl_op_prof_entry> g_op_prof;
++static double g_op_prof_dev_ms[GGML_SYCL_MAX_DEVICES] = {};
++static int64_t g_op_prof_graphs = 0;
++static std::chrono::steady_clock::time_point g_op_prof_last = std::chrono::steady_clock::now();
++
++static std::string ggml_sycl_op_prof_key(const ggml_tensor * node, bool fused) {
++    std::string name = node->name;
++    const size_t p = name.find_last_of('-');
++    if (p != std::string::npos && p + 1 < name.size() &&
++        std::all_of(name.begin() + p + 1, name.end(), [](char c) { return c >= '0' && c <= '9'; })) {
++        name.resize(p);
++    }
++    return std::string(ggml_op_desc(node)) + (fused ? "+ " : " ") + name;
++}
++
++struct ggml_sycl_op_prof_scope {
++    ggml_backend_sycl_context *           ctx;
++    const ggml_tensor *                   node;
++    const int &                           i;
++    const int                             i0;
++    std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
++
++    ggml_sycl_op_prof_scope(ggml_backend_sycl_context * ctx, const ggml_tensor * node, const int & i) :
++        ctx(ctx), node(node), i(i), i0(i) {}
++
++    ~ggml_sycl_op_prof_scope() {
++        try {
++            ctx->stream()->wait();
++        } catch (sycl::exception const & exc) {
++            GGML_LOG_ERROR("%s: %s\n", __func__, exc.what());
++        }
++        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
++        auto & e = g_op_prof[ggml_sycl_op_prof_key(node, i != i0)];
++        e.ms += ms;
++        e.n++;
++        g_op_prof_dev_ms[ctx->device] += ms;
++    }
++};
++
++// profiling runs only while this file exists; touch/rm it to switch without a restart
++static bool ggml_sycl_op_prof_active() {
++    static bool active = false;
++    static auto last = std::chrono::steady_clock::now() - std::chrono::seconds(1);
++    const auto now = std::chrono::steady_clock::now();
++    if (now - last > std::chrono::milliseconds(500)) {
++        last   = now;
++        active = access("/tmp/ggml-sycl-op-profile", F_OK) == 0;
++    }
++    return active;
++}
++
++static void ggml_sycl_op_prof_maybe_print() {
++    g_op_prof_graphs++;
++    const auto now = std::chrono::steady_clock::now();
++    if (now - g_op_prof_last < std::chrono::seconds(g_ggml_sycl_op_profile)) {
++        return;
++    }
++    g_op_prof_last = now;
++    if (g_op_prof.empty()) {
++        return;
++    }
++    std::vector<std::pair<double, std::string>> rows;
++    double total = 0.0;
++    for (const auto & kv : g_op_prof) {
++        rows.emplace_back(kv.second.ms, kv.first);
++        total += kv.second.ms;
++    }
++    std::sort(rows.begin(), rows.end(), [](const auto & a, const auto & b) { return a.first > b.first; });
++    std::string devs;
++    for (int d = 0; d < ggml_sycl_info().device_count; ++d) {
++        devs += " d" + std::to_string(d) + "=" + std::to_string((int) g_op_prof_dev_ms[d]) + "ms";
++        g_op_prof_dev_ms[d] = 0.0;
++    }
++    GGML_LOG_WARN("[SYCL-OP-PROFILE] %.0f ms timed over %lld graph computes;%s\n", total,
++                  (long long) g_op_prof_graphs, devs.c_str());
++    const size_t n_rows = std::min<size_t>(rows.size(), 45);
++    for (size_t r = 0; r < n_rows; ++r) {
++        const auto & e = g_op_prof[rows[r].second];
++        GGML_LOG_WARN("[SYCL-OP-PROFILE] %9.1f ms %5.1f%% %8lld  %s\n", rows[r].first, 100.0 * rows[r].first / total,
++                      (long long) e.n, rows[r].second.c_str());
++    }
++    g_op_prof.clear();
++    g_op_prof_graphs = 0;
++}
++
+ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * sycl_ctx, ggml_cgraph * cgraph) {
+     ggml_sycl_set_main_device(sycl_ctx->device);
++    const bool op_prof_on = g_ggml_sycl_op_profile && ggml_sycl_op_prof_active();
+ 
+     for (int i = 0; i < cgraph->n_nodes; i++) {
+         ggml_tensor * node = cgraph->nodes[i];
+@@ -6096,6 +6202,11 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
+             continue;
+         }
+ 
++        std::optional<ggml_sycl_op_prof_scope> op_prof;
++        if (op_prof_on) {
++            op_prof.emplace(sycl_ctx, node, i);
++        }
++
+         const int nodes_to_skip = ggml_sycl_fuse(*sycl_ctx, cgraph, i);
+         if (nodes_to_skip != 0) {
+             i += nodes_to_skip;
+@@ -6188,6 +6299,9 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
+         }
+         GGML_ASSERT(ok);
+     }
++    if (op_prof_on) {
++        ggml_sycl_op_prof_maybe_print();
++    }
+ }
+ 
+ #ifdef GGML_SYCL_GRAPH

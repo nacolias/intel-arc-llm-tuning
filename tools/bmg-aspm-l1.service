@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: MIT
+# Applies tools/bmg-aspm-l1.sh at boot. Install the script as /usr/local/sbin/bmg-aspm-l1.sh first.
+# "systemctl stop bmg-aspm-l1" runs revert: every link goes back to the firmware's ASPM setting.
+[Unit]
+Description=PCIe ASPM L1 on the Arc Pro B70 links (idle about 46 W to 5 W per card)
+Documentation=file:/usr/local/sbin/bmg-aspm-l1.sh
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/bmg-aspm-l1.sh apply
+ExecStop=/usr/local/sbin/bmg-aspm-l1.sh revert
+# apply waits up to 120 s for xe to bind every GPU
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

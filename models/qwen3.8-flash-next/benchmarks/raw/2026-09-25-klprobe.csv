@@ -1,0 +1,6 @@
+comparison,experiment,positions,top1_agree,kl_mean,kl_median,kl_p95,kl_max
+sparse run A vs sparse run C,sparse-fa-multi-token,128,115,0.213,0.00196,0.311,11.67
+sparse run A vs dense,sparse-fa-multi-token,128,112,0.108,0.00178,0.747,2.81
+sparse run C vs dense,sparse-fa-multi-token,128,113,0.145,0.00242,,
+pooled run A vs pooled run C,pooled-qsa-key-cache,128,116,0.088,0.00247,,
+pooled run A vs pooled off,pooled-qsa-key-cache,128,116,0.136,0.00224,,

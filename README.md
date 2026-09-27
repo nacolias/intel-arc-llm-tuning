@@ -22,12 +22,13 @@ The goal is a reproducible record: what was tried, on which exact stack, what it
 ├── models/                   one folder per model; the core of the repo
 │   ├── README.md             model index and status board
 │   ├── _template/            copy this to start a new model
-│   └── qwen3.8-27b/
-│       ├── README.md         model card: checkpoints, best config, headline numbers
-│       ├── research/         reading notes, upstream issues, external reports
-│       ├── experiments/      change attempts, one file per attempt
-│       ├── benchmarks/       measured results (raw/ holds JSON/CSV output)
-│       └── configs/          compose files, launch scripts, patches/
+│   ├── qwen3.8-27b/
+│   │   ├── README.md         model card: checkpoints, best config, headline numbers
+│   │   ├── research/         reading notes, upstream issues, external reports
+│   │   ├── experiments/      change attempts, one file per attempt
+│   │   ├── benchmarks/       measured results (raw/ holds JSON/CSV output)
+│   │   └── configs/          compose files, launch scripts, patches/
+│   └── qwen3.8-flash-next/   same layout
 ├── benchmarks/               shared methodology, workloads, cross-model summary
 │   └── workloads/            standard prompt sets
 ├── findings/                 cross-cutting, model-independent learnings
@@ -84,6 +85,7 @@ See [`models/README.md`](models/README.md) for the full status board.
 | Model | Best single-stream | Status |
 |---|---|---|
 | [Qwen3.8-27B](models/qwen3.8-27b/) | 78 to 84 tok/s (dual B70, TP2, MTP2) | active tuning |
+| [Qwen3.8-Flash-Next](models/qwen3.8-flash-next/) | 48.6 to 50.5 tok/s short, about 39 tok/s at 135K context (quad B70, llama.cpp SYCL layer split, MTP) | production |
 
 ## Adding a new model
 

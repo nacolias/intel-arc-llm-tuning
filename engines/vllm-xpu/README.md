@@ -6,6 +6,8 @@
 |---|---|---|
 | `vllm/vllm-openai-xpu:v0.28.0` | 0.28.0 | current production base for [Qwen3.8-27B](../../models/qwen3.8-27b/) |
 | `vllm/vllm-openai-xpu:v0.29.0` | 0.29.0 | released 2026-09-08; upgrade candidate |
+| `vllm/vllm-openai-xpu:v0.30.0` | 0.30.0 | released 2026-09-22. torch 2.13.0+xpu, vllm-xpu-kernels 0.1.14.1, oneCCL 2022.0.0 (read from the image). Has the Gated DeltaNet fixes vllm-xpu-kernels #537 and #544 and pipeline-parallel support for the MTP draft. Refuses Qwen4Exp on XPU (`vllm/models/qwen4_exp/__init__.py:30-31`). Default model runner on XPU is V2 |
+| `vllm/vllm-openai-xpu:nightly-7f1a5398e9610d96c473931a26c0e12bbe0d0423` | 0.30.1rc1.dev48+g7f1a5398e | checked 2026-09-24. torch 2.14.0+xpu, vllm-xpu-kernels 0.1.15.4, oneCCL 2022.1.2, oneAPI runtime 2026.1.1. Same Qwen4Exp refusal at `__init__.py:30-31` |
 | community lab images (steveseguin) | 0.27.2rc1 + rebuilt vllm-xpu-kernels and oneCCL | reference for the 112.9 tok/s dual-B70 result |
 
 ## Quantization on XPU
@@ -24,10 +26,13 @@
 | Feature | Status | Notes |
 |---|---|---|
 | Tensor parallel | works | needs per-worker `ZE_AFFINITY_MASK` for graph capture |
+| Tensor parallel 4 on four B70s behind a PCIe switch | works | Qwen3.8-27B GPTQ-INT4, MTP 3: 129.1 tok/s single-stream, 969.0 aggregate at 16 streams on v0.28.0 ([benchmark](../../models/qwen3.8-27b/benchmarks/2026-09-23-tp4-quad-b70.md)). Set `ZE_AFFINITY_MASK=0,1,2,3`, size the KV cache with `--kv-cache-memory-bytes`, and watch driver-held host RAM ([finding](../../findings/xe-vram-overcommit-spills-into-host-ram.md)) |
+| Pipeline parallel with MTP | fails on 0.28.0 | the MTP draft `Qwen3_5MTP` lacks `SupportsPP`; vLLM #46994 adds it in 0.30.0, untested on XPU |
+| Qwen3.8-Flash-Next (Qwen4Exp) | blocked on XPU | upstream raises `NotImplementedError` in 0.30.0, nightly and main; community ports and llm-scaler #660 reviewed in the [deep dive](../../models/qwen3.8-flash-next/research/2026-09-25-vllm-xpu-deep-dive.md) |
 | XPU graphs (`VLLM_XPU_ENABLE_XPU_GRAPH=1`) | works | doubles decode throughput versus eager |
 | Native MTP speculative decoding | works | depth 4 is the single-user sweet spot on Qwen3.8-27B |
 | DFlash / DFlash2 drafters | broken on released versions | non-causal mask dropped by the XPU attention wrapper; RoPE layout fix only on main |
-| Prefix caching with MTP on hybrid models | silent corruption risk | three open upstream issues: vllm#53919, #48375, #53505 |
+| Prefix caching with MTP on hybrid models | silent corruption risk | three open upstream issues: vllm#53919, #48375, #53505. Prefix caching is **on by default** in 0.28.0, also for hybrid models: with no prefix-caching flag, our Qwen3.8-27B server logged `enable_prefix_caching=True` and `Mamba cache mode is set to 'align' for Qwen3_5ForConditionalGeneration by default when prefix caching is enabled`. Pass `--no-enable-prefix-caching` to turn it off ([finding](../../findings/prefix-cache-mtp-corruption-hybrid.md)) |
 | Sleep mode with graphs | needs patch | graphs must be released before sleep |
 
 ## Patch catalog

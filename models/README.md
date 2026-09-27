@@ -7,6 +7,7 @@ One folder per model family and size. Quantized checkpoints, fine-tunes and draf
 | Model | Architecture | Best config | Single-stream | Aggregate (c16) | Status | Last updated |
 |---|---|---|---|---|---|---|
 | [Qwen3.8-27B](qwen3.8-27b/) | hybrid Gated DeltaNet + attention, 27B dense, native MTP | GPTQ INT4 G128, TP2, MTP2, XPU graphs, FP8 KV | 78 to 84 tok/s | 405 to 442 tok/s | active tuning | 2026-09-12 |
+| [Qwen3.8-Flash-Next](qwen3.8-flash-next/) | MoE, about 125B plus a 51B per-layer n-gram table (PLE), about 6B active; 48 layers: 12 QSA sparse attention + 36 Gated DeltaNet; native MTP | `UD-Q4_K_XL` (abliterated), llama.cpp SYCL layer split over 4 cards, 262K context, MTP draft 3, sparse FA, pooled QSA key cache, GPU clock floor | 48.6 to 50.5 tok/s short; about 39 tok/s at 135K | n/a (single slot) | production | 2026-09-25 |
 
 Status values: `candidate` (not tried yet), `baseline` (runs, untuned), `active tuning`, `production`, `parked`, `abandoned`.
 

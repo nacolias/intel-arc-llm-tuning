@@ -79,3 +79,12 @@ From the [performance gains report](research/2026-09-12-performance-gains-report
 - [Experiments log](experiments/README.md)
 - [Benchmarks](benchmarks/README.md)
 - [Configs](configs/README.md)
+
+## Note, 2026-09-23: what the production service actually ran
+
+An audit on the upgraded box, [quad-b70-5800x-pex88096](../../hardware/hosts/quad-b70-5800x-pex88096.md), found the production vLLM service serving a locally quantized DavidAU Qwen3.8-27B merge (GPTQ INT4, symmetric, group 128) with MTP depth 3, not `Qwen3.8-27B-Uncensored-GPTQ-Int4-sym-G128-MTP-BF16` with MTP depth 2. The checkpoint is described in the [TP4 benchmark](benchmarks/2026-09-23-tp4-quad-b70.md). When the service changed was not recorded. The headline numbers above come from the tuning blueprint and are left as recorded.
+
+Two more corrections from the same audit:
+
+- Prefix caching is on by default in vLLM 0.28.0, also for this hybrid model ([note in the finding](../../findings/prefix-cache-mtp-corruption-hybrid.md)).
+- The per-worker affinity patch does not engage in vLLM 0.28.0 as launched ([note in the finding](../../findings/tp-xpu-graphs-need-per-worker-affinity.md)).

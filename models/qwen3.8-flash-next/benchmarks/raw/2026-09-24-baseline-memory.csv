@@ -1,0 +1,7 @@
+run,ctx,ub,ts,mtp,peak_vram_mib_gpu0,peak_vram_mib_gpu1,peak_vram_mib_gpu2,peak_vram_mib_gpu3,peak_driver_held_host_ram_gib,min_mem_available_gib,note
+base,262144,2048,default,off,30949,28623,28890,28189,26.8,,
+mtp,262144,2048,default,on,30842,28505,28772,32636,57.8,,GPU3 past the 32 GB card; overflow spilled into host RAM; decode 0.6 tok/s
+base64k,65536,1024,default,off,23531,21170,21437,20734,8.1,,
+mtp64k,65536,1024,default,on,23596,21254,21520,24589,8.6,,
+A,262144,1024,"12,12,12,13",off,25710,24964,25229,26115,16.8,101.1,filled to 219k
+B,262144,1024,"13,13,13,10",on,27420,26671,26938,25360,17.5,99.8,filled to 219k
