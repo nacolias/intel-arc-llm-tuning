@@ -18,6 +18,7 @@ The goal is a reproducible record: what was tried, on which exact stack, what it
 │   ├── vllm-xpu/
 │   ├── llm-scaler/
 │   ├── llama-cpp-sycl/
+│   ├── strata/
 │   └── openvino/
 ├── models/                   one folder per model; the core of the repo
 │   ├── README.md             model index and status board

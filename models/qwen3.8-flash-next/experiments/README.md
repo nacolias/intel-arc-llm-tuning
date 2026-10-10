@@ -18,6 +18,7 @@ All runs are on [quad-b70-5800x-pex88096](../../../hardware/hosts/quad-b70-5800x
 | 2026-09-25 | [Per-token MUL_MAT_ID up to 512 tokens](2026-09-25-mmid-multitoken-prompt-turns.md) | `GGML_SYCL_MMID_MULTITOKEN_MAX=512` | ~60-token turns unchanged, ~400-token turns 16-33% slower | reverted |
 | 2026-09-25 | [Sparse FA for multi-token batches](2026-09-25-sparse-fa-multi-token.md) | #28796 + patch 0006, `GGML_SYCL_SPARSE_FA=1` | 135K decode 22.2 to 31.3-34.5 tok/s; KL inside run-to-run noise | kept |
 | 2026-09-25 | [Pooled QSA key cache](2026-09-25-pooled-qsa-key-cache.md) | patch 0007 | 135K MTP step 95.8 to 72.6-73.4 ms (39.1-48.5 tok/s); 219K decode 18.4 to 40.6 with sparse FA | kept |
+| 2026-10-10 | [Strata SYCL port, four-card split](2026-10-10-strata-sycl-quad-b70.md) | engine swap: Strata PR #1111 tree (`3f37281`), unsloth UD-IQ4_XS, `--layer-split 12,24,36`, every expert in VRAM, `--ple-io ram` | not yet run | planned |
 
 ## Progress
 
