@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Date** | 2026-10-10 (planned, not yet run) |
+| **Date** | 2026-10-10, revised 2026-10-11 (planned, not yet run) |
 | **Model / checkpoint** | Qwen3.8-Flash-Next: unsloth `UD-IQ4_XS` first; then the huihui-ai abliterated `UD-Q4_K_XL` (production file) if its pack loads |
 | **Host** | [quad-b70-5800x-pex88096](../../../hardware/hosts/quad-b70-5800x-pex88096.md) |
 | **Status** | planned |
@@ -10,9 +10,11 @@
 | **Result** | not yet run |
 | **Related** | [research note](../research/2026-10-10-strata-sycl-port.md), [engine page](../../../engines/strata/README.md), findings on [VRAM overcommit](../../../findings/xe-vram-overcommit-spills-into-host-ram.md) and the [clock floor](../../../findings/gpu-clock-floor-speeds-layer-split.md) |
 
+**Revision 2026-10-11.** Upstream v0.1.42 fixed the two-card first-request crash and v0.1.43 merged the PR #1111 branch's prompt-path work (details in the [engine page](../../../engines/strata/README.md#update-2026-10-11)), so arm 1 now builds main at tag `v0.1.43` and the PR #1111 arm is dropped. The XeStrata fork, an Intel-first rewrite with prebuilt Ubuntu 26.04 packages, becomes arm 2. The maintainer asked for UD-IQ4_XS retests with the default expert kernels, so the first pass runs without `STRATA_EXPERT_SPLIT=1`.
+
 ## Hypothesis
 
-Strata's SYCL engine, split over the four cards with every expert resident in VRAM, decodes faster than our patched llama.cpp build at short and medium context and reads prompts faster, because each card replays its verify window as one captured graph and the prompt path runs FP16 GEMMs instead of a host-synced per-expert loop. Community points (all UNVERIFIED, other hosts, lighter quantizations): 96 tok/s short and 67 after 2.5K on two B70s, 40 to 45 tok/s on three mixed Arc Pro cards with IQ4_XS, 744 to 1,392 tok/s prompt at 40K on one B70. Against our 48.6 to 50.5 tok/s short and 568 to 645 tok/s prompt, the expected range is +10% to +90% on short-prompt decode and +20% to +100% on prompt processing, with the four-way pipeline (three hand-offs per window) as the unknown that could cancel it. At 135K and beyond the expectation is parity to +50% (community: 48.75 tok/s at 128K on one B70 with IQ3_S against our 39 to 40).
+Strata's SYCL engine, split over the four cards with every expert resident in VRAM, decodes faster than our patched llama.cpp build at short and medium context and reads prompts faster, because each card replays its verify window as one captured graph and the prompt path runs FP16 GEMMs instead of a host-synced per-expert loop. Community points (all UNVERIFIED, other hosts, lighter quantizations): 96 tok/s short and 67 after 2.5K on two B70s, 40 to 45 tok/s on three mixed Arc Pro cards with IQ4_XS, 744 to 1,392 tok/s prompt at 40K on one B70. Against our 48.6 to 50.5 tok/s short and 568 to 645 tok/s prompt, the expected range is +10% to +90% on short-prompt decode and +20% to +100% on prompt processing, with the four-way pipeline (three hand-offs per window) as the unknown that could cancel it. At 135K and beyond the expectation is parity to +50% (community: 48.75 tok/s at 128K on one B70 with IQ3_S against our 39 to 40). XeStrata's own one-B70 table claims more (77 to 89 tok/s decode and 1,400 to 2,300 tok/s prompt with IQ3_XXS, UNVERIFIED), which is why it is an arm.
 
 Correctness is part of the hypothesis: greedy output must be identical with speculative decoding on and off, and free of the collapse reported for UD-IQ4_XS on two B70s.
 
@@ -22,10 +24,12 @@ An engine swap, not a flag change. Four arms, in this order:
 
 | Arm | Tree | Cards | Checkpoint | Purpose |
 |---|---|---|---|---|
-| 1 | Strata [PR #1111](https://github.com/Niko1221/Strata/pull/1111) head `3f37281` (engine 0.1.40-sycl) | 4, `--layer-split 12,24,36` | unsloth UD-IQ4_XS | the target configuration |
-| 2 | Strata main `fb58e0d` (v0.1.41), same config | 4 | same | 10-minute check: does [#1440](https://github.com/Niko1221/Strata/issues/1440)'s first-request crash appear with four cards? Report either way |
+| 1 | Strata main at tag `v0.1.43` (`7695859`, 2026-10-11) | 4, `--layer-split 12,24,36` | unsloth UD-IQ4_XS | the target configuration |
+| 2 | [XeStrata](https://github.com/MistVVK/XeStrata) xe0.1.42 (`.deb` for Ubuntu 26.04, or a source build), same split and checkpoint | 4 | same | the Intel-first rewrite against upstream on the same cards; it also has the only Intel UD-Q4_K_XL numbers |
 | 3 | the better of 1 and 2 | 4 | huihui-ai abliterated UD-Q4_K_XL | can the production checkpoint run on Strata on Intel? |
-| fallback | PR #1111 | 2, `--layer-split 24`, cards `level_zero:0,1` | ISTA-DASLab IQ3_XXS | reproduces the community two-card result if arm 1 fails, to separate host problems from four-stage problems |
+| fallback | arm 1's tree | 2, `--layer-split 24`, cards `level_zero:0,1` | ISTA-DASLab IQ3_XXS or IQ2_XS | reproduces the community two-card result (64.5 to 68 tok/s on v0.1.42) if arm 1 fails, to separate host problems from four-stage problems |
+
+The PR #1111 branch (`3f37281`) is no longer an arm: its fixes are in main.
 
 Against the production launch ([configs/llama-server-262k-mtp.sh](../configs/llama-server-262k-mtp.sh)) the service differences are: no vision, int8 KV instead of f16, Strata's MTP windows (`--spec 4`, up to 3 MTP drafts plus prompt lookup) instead of n-max 3, and 4,096-token prompt chunks instead of `-ub 1536`.
 
@@ -35,7 +39,7 @@ Fill in from the running system before the first measurement.
 
 | Component | Version / value |
 |---|---|
-| Engine and image (tag and digest) | Strata commit (arm 1: `3f37281`; arm 2: `fb58e0d`), native build, `-DSTRATA_SYCL_AOT=bmg-g31`, `STRATA_SYCL_PARITY` on or off; the engine's own version line |
+| Engine and image (tag and digest) | arm 1: Strata tag `v0.1.43` (`7695859`), native build, `-DSTRATA_SYCL_AOT=bmg-g31`, `STRATA_SYCL_PARITY` on or off; arm 2: XeStrata xe0.1.42 package version or source commit; the engine's own version line |
 | Compiler | oneAPI DPC++ `icpx` 2026.1.1, oneMKL 2026.1, `ocloc` version |
 | compute-runtime / IGC | 26.35.39758.11 / 2.41.9 on 2026-09-25; re-read |
 | Kernel / `xe` driver / GuC firmware | 7.0.0-34-generic / `xe` / 70.58.0; re-read |
@@ -73,8 +77,7 @@ done
 ```bash
 git clone https://github.com/Niko1221/Strata /path/to/Strata
 cd /path/to/Strata
-git fetch origin pull/1111/head:pr-1111
-git checkout pr-1111            # 3f37281, 2026-10-06; arm 2 uses: git checkout fb58e0d
+git checkout v0.1.43            # 7695859, 2026-10-11; a newer tag is fine if its notes do not touch the SYCL split
 ```
 
 ### 2. Build natively
@@ -91,7 +94,9 @@ cmake --build build-sycl-aot --target strata -j 16
 
 Optional, once, on one card: build the kernel tests too (drop nothing; `STRATA_SYCL_PARITY` is on by default) and run `ONEAPI_DEVICE_SELECTOR=level_zero:0 ctest --test-dir build-sycl-aot`. Expect the model-fixture tests (`iq_parity`, `ple_parity`) and the grouped-S2 bitwise test to fail, as in the B65 report (26 pass, 4 fail). Record the counts.
 
-Without `ocloc`, build without `-DSTRATA_SYCL_AOT` (JIT): the first start compiles for about 47 s, and the spin bound stays at 20,000 in this tree, which is the right value with `--mtp`.
+Without `ocloc`, build without `-DSTRATA_SYCL_AOT` (JIT): the first start compiles for about 47 s. The spin bound is chosen per device at run time since v0.1.41 (20,000 reads on `xe`), which is the right value with `--mtp`.
+
+For arm 2, install the XeStrata `.deb` for Ubuntu 26.04 from its releases page (check `SHA256SUMS`), or build from its `./setup.sh` per its `docs/BUILD.md`; its `docs/MULTIGPU.md` takes `--gpus` at setup and `--layer-split` like upstream. It needs Above 4G Decoding and Resizable BAR, which this host has (32 GiB BARs).
 
 ### 3. Python environment
 
@@ -144,7 +149,7 @@ Save as `strata-flash-next-quad.json` in the Strata checkout. The engine is poin
     "--ple-gguf", "/path/to/models/UD-IQ4_XS/<the shard that holds per_layer_token_embd.weight>",
     "--ple-io", "ram",
     "--mtp", "mtp/rt",
-    "--expert-profile", "data/expert-profile.bin",
+    "--expert-profile", "data/expert-profile-sycl.bin",
     "--expert-cache", "auto",
     "--stream-experts",
     "--prefill", "4096",
@@ -154,6 +159,7 @@ Save as `strata-flash-next-quad.json` in the Strata checkout. The engine is poin
     "--kv", "int8",
     "--vram-reserve-mib", "2048",
     "--layer-split", "12,24,36",
+    "--trim-stage-weights",
     "--conversation-cache-mib", "0"
   ],
   "env": {
@@ -161,8 +167,6 @@ Save as `strata-flash-next-quad.json` in the Strata checkout. The engine is poin
     "STRATA_VERIFY_DEVICE_PLAN": "1",
     "STRATA_VERIFY_NO_HOST": "1",
     "STRATA_MIRROR_MIB": "0",
-    "STRATA_STAGE_TRIM": "1",
-    "STRATA_EXPERT_SPLIT": "1",
     "SYCL_CACHE_PERSISTENT": "0",
     "ZES_ENABLE_SYSMAN": "1"
   }
@@ -172,9 +176,10 @@ Save as `strata-flash-next-quad.json` in the Strata checkout. The engine is poin
 Why these values:
 
 - `<pack dir>` is the pack written in step 4 (`packs/ud-iq4_xs`); the server reads the tokenizer from it.
-- `--layer-split 12,24,36`: 12 layers and 3 QSA layers per card; `auto` is the second try. On main (arm 2) replace `STRATA_STAGE_TRIM` with the flag `--trim-stage-weights`.
+- `--layer-split 12,24,36`: 12 layers and 3 QSA layers per card; `auto` is the second try. `--trim-stage-weights` (main's flag; `STRATA_STAGE_TRIM=1` on the older ports) loads only each stage's dense weights.
+- `data/expert-profile-sycl.bin` is the `xe` ranking v0.1.43 added; with every expert resident the ranking only orders the fill.
 - `STRATA_VERIFY_NO_HOST=1` is valid only with every expert resident, which the startup log must confirm (`100% of the experts resident` for every stage). `STRATA_MIRROR_MIB=0` stops an unused pinned mirror from being allocated.
-- `STRATA_EXPERT_SPLIT=1` is the kernel set that gave correct UD-IQ4_XS output in [#1484](https://github.com/Niko1221/Strata/issues/1484); A/B it against the default (`STRATA_EXPERT_SPLIT` unset) once the greedy checks pass, since the port's own kernels were 11 to 16% faster on the Coder.
+- `STRATA_EXPERT_SPLIT` is left unset on the first pass: the maintainer measured the port's default kernels equal to a reference on one B70 and asked for v0.1.42 retests ([#1484](https://github.com/Niko1221/Strata/issues/1484)). If the eight-prompt scan shows the collapse, rerun with `STRATA_EXPERT_SPLIT=1` (the kernel set that was clean in that report, 11 to 16% slower on the Coder) and post both results there.
 - `--no-prefill-borrow`: own prompt buffers; VRAM is not short, and a borrow costs about 1 s of refill per prompt.
 - `--ple-io ram`: 28.8 GB locked in RAM; the default SSD row reads cost 30 to 40% of decode on one reporter's NVMe.
 - `--kv int8`: 3.6 GB at 262K over four cards; `--kv fp16` is the A/B if int8 changes output quality.
@@ -217,27 +222,28 @@ Save raw output under [benchmarks/raw/](../benchmarks/raw/) as `2026-MM-DD-strat
 - `MemAvailable` under 20 GiB, or driver-held host RAM still growing after the expert fill has finished.
 - Any `xe` GT reset or engine reset in `dmesg`.
 - The server reporting "still starting" past 10 minutes after the fill lines stop.
-- Corrupt output in step 7: stop measuring, keep the log, try `STRATA_EXPERT_SPLIT` the other way once, then move to the fallback arm.
+- Corrupt output in step 7: stop measuring, keep the log, try `STRATA_EXPERT_SPLIT=1` once, then move to the fallback arm.
+- A device loss on the first window (`UR_RESULT_ERROR_DEVICE_LOST`, an `xe` page fault in `dmesg`): the open failure mode of [#1440](https://github.com/Niko1221/Strata/issues/1440) for partially resident splits. Check the residency lines first; if every stage was 100% resident, report it with the log.
 
 ## Results
 
 Not yet run. Fill in per arm.
 
-| Metric | Baseline (llama.cpp production) | Arm 1: Strata PR #1111, UD-IQ4_XS | Arm 3: Strata, abliterated UD-Q4_K_XL | Delta |
-|---|---|---|---|---|
-| Single-stream decode, short | 48.6 to 50.5 tok/s | | | |
-| Single-stream decode, 9,749-token prompt | 60.6 to 67.2 tok/s | | | |
-| Single-stream decode, 39,119-token prompt | 53.6 to 55.2 tok/s | | | |
-| Single-stream decode, 135K agent session (median) | about 39 tok/s | | | |
-| Single-stream decode, 219K | 40.6 tok/s | | | |
-| Prompt processing, 9,749 / 39,119 | 589.8 / 577.2 tok/s | | | |
-| Prompt processing, 219K cold | 268.3 tok/s (816.9 s) | | | |
-| Follow-up turn, about 60 tokens on a cached 135K prefix | 1.04 to 1.32 s | | | |
-| Aggregate at c4 / c8 | n/a (single slot) | | | |
-| Spec-decode acceptance | 62.5 to 82.7% at 135K | | | |
-| Peak VRAM, busiest card, 219K | 28,957 MiB | | | |
-| Peak driver-held host RAM | 16.8 to 22 GiB (ubatch runs) | | | |
-| Load time | about 2.5 min (111 GB) | | | |
+| Metric | Baseline (llama.cpp production) | Arm 1: Strata v0.1.43, UD-IQ4_XS | Arm 2: XeStrata xe0.1.42, UD-IQ4_XS | Arm 3: abliterated UD-Q4_K_XL | Delta |
+|---|---|---|---|---|---|
+| Single-stream decode, short | 48.6 to 50.5 tok/s | | | | |
+| Single-stream decode, 9,749-token prompt | 60.6 to 67.2 tok/s | | | | |
+| Single-stream decode, 39,119-token prompt | 53.6 to 55.2 tok/s | | | | |
+| Single-stream decode, 135K agent session (median) | about 39 tok/s | | | | |
+| Single-stream decode, 219K | 40.6 tok/s | | | | |
+| Prompt processing, 9,749 / 39,119 | 589.8 / 577.2 tok/s | | | | |
+| Prompt processing, 219K cold | 268.3 tok/s (816.9 s) | | | | |
+| Follow-up turn, about 60 tokens on a cached 135K prefix | 1.04 to 1.32 s | | | | |
+| Aggregate at c4 / c8 | n/a (single slot) | | | | |
+| Spec-decode acceptance | 62.5 to 82.7% at 135K | | | | |
+| Peak VRAM, busiest card, 219K | 28,957 MiB | | | | |
+| Peak driver-held host RAM | 16.8 to 22 GiB (ubatch runs) | | | | |
+| Load time | about 2.5 min (111 GB) | | | | |
 
 ## Correctness
 
@@ -256,4 +262,4 @@ Pending. Rules set in advance:
 - [ ] Report the four-card result in [#1440](https://github.com/Niko1221/Strata/issues/1440) or [#1054](https://github.com/Niko1221/Strata/issues/1054), with hostnames, paths and keys stripped.
 - [ ] If arm 1 is correct and fast, write a `configs/strata-*.json` with placeholders and a benchmark file; update the model card only if a headline number changes.
 - [ ] If arm 3 works, measure the refusal smoke probe and the teacher-forced KL check against llama.cpp on the same file.
-- [ ] Re-run arm 2 when main carries a fix for the split crash.
+- [ ] If the first-window device loss of #1440 appears with every expert resident, report it; otherwise add our four-card data point there.

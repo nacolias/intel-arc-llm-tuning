@@ -1,6 +1,23 @@
 # Strata (SYCL port)
 
-Not yet run here. Status checked on 2026-10-10 from the upstream repository, its issue tracker and community reports. Every number on this page is a community or upstream measurement and is **UNVERIFIED** on our hardware. The planned first run is [this experiment](../../models/qwen3.8-flash-next/experiments/2026-10-10-strata-sycl-quad-b70.md); the reading notes are in [this research note](../../models/qwen3.8-flash-next/research/2026-10-10-strata-sycl-port.md).
+Not yet run here. Status checked on 2026-10-10 and re-checked on 2026-10-11 (see [the update](#update-2026-10-11)) from the upstream repository, its issue tracker and community reports. Every number on this page is a community or upstream measurement and is **UNVERIFIED** on our hardware. The planned first run is [this experiment](../../models/qwen3.8-flash-next/experiments/2026-10-10-strata-sycl-quad-b70.md); the reading notes are in [this research note](../../models/qwen3.8-flash-next/research/2026-10-10-strata-sycl-port.md).
+
+## Update 2026-10-11
+
+Main moved from v0.1.41 to v0.1.43 in three days (307 commits, tags v0.1.42 on 2026-10-10 and v0.1.43 on 2026-10-11). What changed for Arc:
+
+| Change | Where | Effect on a multi-B70 run |
+|---|---|---|
+| The split's first-request crash ("graph associated with a different context") is root-caused: `dpct` turned the Verifier's null-stream sentinel into a captured queue, so a later stage ran on the first card's queue ([#1555](https://github.com/Niko1221/Strata/issues/1555), fixed by PR #1589 in v0.1.42) | `sycl/src/core/verify.cpp` | a fully resident split runs on main again: 2x B60 at about 68 tok/s on v0.1.42 with no workaround; 2x B70 IQ2_XS at 64.5 tok/s with the fix on top of v0.1.41 ([#1440](https://github.com/Niko1221/Strata/issues/1440), 2026-10-11) |
+| Still failing in the same thread: partially resident models (IQ3_XXS on 2x B60) and a mixed B70 + B60 pair lose the device on the first window (`UR_RESULT_ERROR_DEVICE_LOST`, an `xe` page fault and engine reset); 2x B70 IQ3_S crashed on about 12K-token prompts, bisected to GEMM operand staging | open | the fully resident case we plan is the one that works; keep every expert in VRAM |
+| GEMM operand staging off on Battlemage; expert copies on the card's copy engine (`STRATA_COPY_ENGINE`, default on for Battlemage); the lend mirror; fused expert dequant; a lean verify graph (`STRATA_VERIFY_LEAN`); a new expert ranking for `xe` cards (`data/expert-profile-sycl.bin`, written by setup) | v0.1.43, branch `f-143-intel` | one B70, IQ3_S, 128K config: 4K prompt 8.5 to 3.3 s, 16K 27.4 to 13.4 s; decode +14 to 21% where experts do not all fit (the ranking changes which experts are resident, so it is moot with everything resident); same tokens |
+| `sycl_version()` reads the project version | main | [#1794](https://github.com/Niko1221/Strata/issues/1794) (setup refusing the unsloth files on Intel) fixed |
+| `setup_intel.py` writes `ONEAPI_DEVICE_SELECTOR=level_zero:*` when the config's `gpu` is a list, so a split through setup sees every card | main | a hand-written config is still the route for our files |
+| PR #1111's prompt-path work (lend mirror, fused dequant, QSA scores as GEMM tiles) is in main through `f-143-intel`; the PR itself is still open at `3f37281` | main | the PR branch is superseded; build main |
+| `--pipeline-windows 2` on by default for splits of three or more stages | HIP gfx12 only; the SYCL port still pipelines exactly two stages | none for us yet |
+| `./bench.sh` (`tools/strata_bench.py`): a fixed local benchmark that writes a community-format report and scrubs home folders, names and addresses | v0.1.43 | use it beside our fnbench points |
+
+The row "main v0.1.41" in the status table below and the known-issues rows marked 2026-10-10 are kept as written; this section supersedes them.
 
 ## What it is
 
@@ -22,7 +39,7 @@ The PC-centric design is not what we need on four 32 GB cards, where everything 
 |---|---|
 | Port | `sycl/` in the main repository: the CUDA engine migrated with SYCLomatic (`dpct`) plus hand fixes, by the author of the fork `maxfridbe/Strata_B70` ([PR #423](https://github.com/Niko1221/Strata/pull/423)). No upstream file is changed; the port mirrors the files it alters and is re-migrated after each upstream merge |
 | Official status | "Intel Arc officially supported, Linux only" since v0.1.40.2 (2026-10-07). The maintainers test one Arc Pro B70 (`xe`) and one Arc A750 (`i915`). Everything with two or more cards is community-tested |
-| Main branch | `fb58e0d` = v0.1.41 (2026-10-08); no newer commit on 2026-10-10 |
+| Main branch | `7695859` = v0.1.43 on 2026-10-11 (was `fb58e0d` = v0.1.41 on 2026-10-10; 307 commits in between) |
 | Build | Linux only, from source. Docker route: `./setup.sh --backend sycl` builds in the `strata-sycl-dev` image, which starts from a community llama.cpp SYCL image (`ghcr.io/snailium/llama.cpp-sycl-intel-b70/llama-sycl-b70:stable`) plus `dpct`. Native route: oneAPI DPC++ 2026.1 with oneMKL, `cmake -S sycl -B build-sycl-aot -G Ninja -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DSTRATA_SYCL_AOT=bmg-g31` (needs `ocloc`; without AOT the first start JIT-compiles for about 47 s) |
 | Load-bearing compiler flags | `-fp-model=precise`, `-cl-fp32-correctly-rounded-divide-sqrt` (byte-exact quantizers), `-fsycl-default-sub-group-size=32` (kernels written for 32-wide warps) |
 | Model files | the same GGUFs llama.cpp uses, plus a "native pack" from `tools/iq_pack.py` (dense tensors, tokenizer, index; about 30 s), the MTP draft layer from the base checkpoint (`tools/mtp_fetch.py`, `mtp_pack.py --experts q2_0`, `mtp_rt.py`; 4.9 GB download, 809 MiB of VRAM) and the bundled expert profile |
@@ -63,11 +80,13 @@ What each card holds: its layers' dense weights, its session state and KV for it
 | [PR #1111](https://github.com/Niko1221/Strata/pull/1111) head `3f37281` (branch `intel-arc-0.1.40` of `maxfridbe/Strata_B70`, 0.1.40-sycl) | 2x B70, IQ3_XXS all resident | works: 96.4 tok/s short, 2,477-token prompt in 3.94 s then 67.1 tok/s, 170 of 170 requests in a 12-minute soak; a second host: 64 short, 95 / 303 at 720 tokens, 67 / 756 at 3.2K with `--ple-io ram` (30 to 40% less decode with the default `--ple-io direct` on a slow NVMe) | [#1054](https://github.com/Niko1221/Strata/issues/1054) |
 | PR #1111 branch `3f37281` | 2x B70, UD-IQ4_XS, 86 to 88% resident on a 30 GiB host | runs with `STRATA_EXPERT_SPLIT=1`: prompt 712 tok/s at 7.2 to 7.6K, decode 16 to 18 tok/s with `--spec 2` and no MTP; the default expert kernels gave corrupted output after 20 to 40 tokens | [#1484](https://github.com/Niko1221/Strata/issues/1484) |
 | main v0.1.40.2 `e8ca9af` | 2x B70 | fails three ways: the host mirror takes later stages' layers, card 0's VRAM is charged to card 1, and the first request crashes | [#1440](https://github.com/Niko1221/Strata/issues/1440) |
-| main v0.1.41 `fb58e0d` | 2x B70 and 2x B60 | starts with 100% of experts resident; the first request crashes in `sycl/src/core/verify.cpp:1706` ("Cannot submit to a queue with a dependency from a graph that is associated with a different context"). `STRATA_SH_STREAM=0` avoids the crash at about 6 tok/s on B70 and 1.7 on B60. Open on 2026-10-10 | [#1440](https://github.com/Niko1221/Strata/issues/1440), [#1054](https://github.com/Niko1221/Strata/issues/1054) |
+| main v0.1.41 `fb58e0d` | 2x B70 and 2x B60 | starts with 100% of experts resident; the first request crashes in `sycl/src/core/verify.cpp:1706` ("Cannot submit to a queue with a dependency from a graph that is associated with a different context"). `STRATA_SH_STREAM=0` avoids the crash at about 6 tok/s on B70 and 1.7 on B60. Open on 2026-10-10; root-caused and fixed in v0.1.42 (see the update) | [#1440](https://github.com/Niko1221/Strata/issues/1440), [#1054](https://github.com/Niko1221/Strata/issues/1054) |
+| main v0.1.42 `61b3fb5` and later | 2x B60, every expert resident | the split runs at about 68 tok/s with no workaround (2026-10-11); 2x B70 IQ2_XS 64.5 tok/s with the same fix on v0.1.41 | [#1440](https://github.com/Niko1221/Strata/issues/1440) |
+| main v0.1.42 | 2x B60 with IQ3_XXS partly in the host mirror; B70 + B60 mixed | device lost on the first window (`xe` page fault, engine reset); 2x B70 IQ3_S crashed on about 12K-token prompts until GEMM staging was turned off (default in v0.1.43) | [#1440](https://github.com/Niko1221/Strata/issues/1440) |
 | fork [Strata-Void](https://github.com/Jumbomuffin777/Strata-Void) (0.1.39-sycl base) | B70 + B65 + B60 (88 GB), Swift 1.5 IQ4_XS all resident, `--layer-split 18,35`, up to 128K | 40 to 45 tok/s single stream, about 113 tok/s over 6 slots, prompt 659 tok/s at 16K and 600 to 630 to 122K | fork README |
 | fork "Strata-for-Intel-B70s" | 2x B70, IQ3_S, 262K with KV streaming | 18.5 to 21.7 tok/s decode, 317 to 345 tok/s prompt from 32K to 262K; base version unknown | fork README |
 
-No report with four Intel cards exists (searched 2026-10-10). The three-card fork run is the closest. For a multi-B70 run today the working code is the PR #1111 branch, not main.
+No report with four Intel cards exists (searched 2026-10-10 and 2026-10-11). The three-card fork run is the closest. On 2026-10-10 the only working multi-B70 code was the PR #1111 branch; since v0.1.42 main runs a fully resident split, and v0.1.43 carries the branch's prompt-path work, so main is the tree to build.
 
 ## Single-card results worth knowing
 
@@ -115,6 +134,10 @@ For our production numbers with llama.cpp on four cards see the [model card](../
 | `SYCL_CACHE_PERSISTENT` | 0 | the persistent JIT cache crashed on Xe2 |
 | `ZES_ENABLE_SYSMAN` | 1 | free-memory queries |
 | `ONEAPI_DEVICE_SELECTOR` | `level_zero:0` in the image | set `level_zero:0,1,2,3` for four cards |
+| `STRATA_COPY_ENGINE` (v0.1.43) | on for Battlemage | prompt-path expert copies on the card's copy engine instead of the compute engine; `0` turns it off |
+| `STRATA_SYCL_GEMM_STAGE` (v0.1.43) | off on Battlemage | `1` restores the oneMKL operand staging that an A770 bug needed; staging crashed 2x B70 IQ3_S on 12K prompts |
+| `STRATA_VERIFY_LEAN` (v0.1.43) | 1 | drops the doorbell and host-flag nodes from the window graph under `STRATA_VERIFY_NO_HOST`; -2% decode on a B70 |
+| `data/expert-profile-sycl.bin` (v0.1.43) | written by setup for `xe` cards | the expert ranking for cache placement; irrelevant once every expert is resident |
 
 `sycl/serve/strata-sycl.sh` drops any variable whose value is exactly `0`, so a `0` must be written as `00` through that wrapper (#1440). The engine reads `STRATA_VERIFY_NO_HOST=0` as off.
 
@@ -122,10 +145,10 @@ For our production numbers with llama.cpp on four cards see the [model card](../
 
 | Issue | What | Status |
 |---|---|---|
-| [#1440](https://github.com/Niko1221/Strata/issues/1440) | 2x B70 layer split on main: three failures | two fixed in 0.1.41; the first-request graph crash open |
+| [#1440](https://github.com/Niko1221/Strata/issues/1440) | 2x B70 layer split on main: three failures | two fixed in 0.1.41; the first-request graph crash fixed in v0.1.42 ([#1555](https://github.com/Niko1221/Strata/issues/1555), PR #1589); a device loss on the first window remains for partially resident and mixed-card splits (2026-10-11) |
 | [#1054](https://github.com/Niko1221/Strata/issues/1054) | 2x B70 `--layer-split auto` deadlock after the host-mirror fill | gone in 0.1.41, replaced by the crash above; working on the PR #1111 branch |
-| [#1484](https://github.com/Niko1221/Strata/issues/1484) | 2x B70 + UD-IQ4_XS: the port's default expert kernels corrupt output after 20 to 40 tokens; `STRATA_EXPERT_SPLIT=1` restores it | open; cause suspected in synchronization, not the kernels' arithmetic |
-| [#1794](https://github.com/Niko1221/Strata/issues/1794) | `sycl/setup_intel.py` reads the version as `0` on 0.1.41, so setup refuses UD-IQ4_XS and UD-Q4_K_XL on Intel | open; hand-written config avoids setup |
+| [#1484](https://github.com/Niko1221/Strata/issues/1484) | 2x B70 + UD-IQ4_XS: the port's default expert kernels corrupt output after 20 to 40 tokens; `STRATA_EXPERT_SPLIT=1` restores it | open; on 2026-10-10 the maintainer measured the default kernels equal to a reference on one B70 (24 gate/up and down pairs) and asked for a retest on v0.1.42, which has the two-card queue fix and the alias check |
+| [#1794](https://github.com/Niko1221/Strata/issues/1794) | `sycl/setup_intel.py` reads the version as `0` on 0.1.41, so setup refuses UD-IQ4_XS and UD-Q4_K_XL on Intel | fixed on main after v0.1.41 (`sycl_version()` reads the project version); the multi-GPU RAM guard for the unsloth files in `setup.py` remains, so a hand-written config is still the route |
 | [#1473](https://github.com/Niko1221/Strata/issues/1473), [#1397](https://github.com/Niko1221/Strata/issues/1397) | the spin bound: one constant cannot serve `--mtp` and suffix-only drafting | per-device bound in 0.1.41; the two-bound split not done |
 | [#1745](https://github.com/Niko1221/Strata/issues/1745) | the PCIe probe times a pageable copy and reads the link about 4x low | fix PR #1746 open; irrelevant with nothing mirrored |
 | [#867](https://github.com/Niko1221/Strata/issues/867) | 2x B60: per-layer ring waits never saw a slow layer ("never rang") | fixed in 0.1.40 |
@@ -133,11 +156,25 @@ For our production numbers with llama.cpp on four cards see the [model card](../
 | #1145, #498 | `setup.py` refuses multi-GPU for the unsloth files unless RAM holds the GGUF plus 24 GB | hand-written config |
 | `docs/INTEL_ARC.md` | `source setvars.sh` fails under `set -u` (`OCL_ICD_FILENAMES`) | source it before `set -u` |
 
+## Forks worth knowing (checked 2026-10-11)
+
+About 2,000 forks exist. These are the ones with Intel content or a multi-card design; none has run four Intel cards.
+
+| Fork | What it is | For us |
+|---|---|---|
+| [MistVVK/XeStrata](https://github.com/MistVVK/XeStrata) | 137 stars, LGPL-3.0-or-later, 3,471 commits by one main author. An Intel-first port: the GPU code rewritten in SYCL and built with intel/llvm instead of the `dpct` migration; AMD and NVIDIA builds too; tracks upstream v0.1.42 (merged 2026-10-11); prebuilt `.deb` for Ubuntu 26.04 and `.rpm` for Fedora 44, releases xe0.1.39 (2026-10-07) to xe0.1.42 (2026-10-11). Its own one-B70 table (IQ3_XXS, temperature 0, XeStrata / upstream v0.1.42): prefill 1,433 / 730 tok/s at 4K, 2,271 / 735 at 32K, 1,904 / 825 at 262K; decode 89.0 / 36.3 at 4K, 76.9 / 17.9 at 262K. A B70 + RTX 4070 split: IQ3_S 62.4 to 68.7 tok/s, **UD-Q4_K_XL 20.8 to 38.3 tok/s** (the only Intel numbers for that file anywhere), IQ2_XS 73.5 to 84.7. Independent: B65 7K-input decode 43.3 to 51.0 tok/s against upstream v0.1.41 (+18%), B50 prefill 366 to 462 and decode 21.5 to 32.9 (comments on PR #1111) | **the one alternative worth an A/B.** IQ3_XXS does not fit one B70, so its upstream column measures a mirrored model, not our all-resident case. Open issues on 2026-10-11: a B70 wedged during a larger prefill (#10) and a B60 page fault with device loss (#2). Japanese commit log; measurement records kept outside git; oneMKL in some builds; SYCL vision encoder off (nondeterministic) |
+| [Jumbomuffin777/Strata-Void](https://github.com/Jumbomuffin777/Strata-Void) | 0.1.39-sycl base; three Arc Pro cards all resident; task-parallel requests, `--slot-context`, faster IQ4_XS and IQ4_NL prompt dequant | the only three-card all-resident Intel run; stale base; its configs are the template for ours |
+| [chmihimabb-max/Strata-for-Intel-B70s](https://github.com/chmihimabb-max/Strata-for-Intel-B70s) | 2x B70, IQ3_S at 262K with KV streaming, 18 to 22 tok/s | slower than everything above; base version unknown |
+| `maxfridbe/Strata_B70` ([PR #1111](https://github.com/Niko1221/Strata/pull/1111)) | the port author's fork; branch `intel-arc-0.1.40` at `3f37281` | superseded by main v0.1.43 |
+| [maxious/Strata_SYCL](https://github.com/maxious/Strata_SYCL) | a fork of the fork (branch `b70-intel-arc-0139`): B60 experiments, int8 DPAS and ESIMD benches, `STRATA_MMVQ_PREUNPACK` and friends | its Q6_K/Q5_K decode options are in the port, off by default; nothing else to take |
+| [maxfridbe/nextsycl](https://github.com/maxfridbe/nextsycl) | not a fork: a Rust runtime for Arc that reuses Strata's SYCL kernels (MIT provenance), serving Flash-Next, Qwen3.8-27B dense and GLM-5.3-Flash; B70 IQ2_XS about 77 tok/s at 20 tokens and 75 at 128K; two-card split; 8 stars | a second engine to watch, not a Strata replacement |
+| Hardin22/Strata-DualGPU, architectds/Strata, eddoursul/Strata, jmnargi/Strata-V100 | NVIDIA multi-GPU and speed forks (26 to 89 stars); the dual-GPU and resident-split work was merged upstream | CUDA-specific; nothing for Arc |
+
 ## What we would lose against our llama.cpp setup
 
 - Vision: not wired on Intel. Our production config serves the BF16 projector.
 - The abliterated UD-Q4_K_XL checkpoint: no Intel report of any Q4_K_XL file on Strata; manual pack.
-- A tested four-card path: none exists; main's split is broken and the working branch is a six-day-old fork.
+- A tested four-card path: none exists. Main's two-card split works again since v0.1.42 for fully resident models; partially resident and mixed-card splits still lose the device on the first window (2026-10-11).
 - Our llama.cpp patches do not carry over; Strata's QSA and MoE paths are its own.
 
 ## Notes
